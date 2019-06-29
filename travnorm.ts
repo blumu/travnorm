@@ -129,3 +129,19 @@ console.log("test")
 //printLambdaTerm(omega_alt)
 console.log("ended")
 
+
+////////// Justified sequences
+
+/// An node occurrence in a justified sequence
+type Occurrence<T> =
+{
+  /// the node it is an occurrence of
+  node : TermNode<T>
+  /// distance from the justifier in the sequence
+  justifier : number
+  /// justification label
+  linkLabel : number
+}
+
+/// A justified sequence of node occurrences
+type JustSeq<T> = Occurrence<T>[]
