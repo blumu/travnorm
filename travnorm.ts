@@ -1,72 +1,91 @@
 /////////////// Variable names
 type identifier = string
 
-/////////////// Lambda term with standard AST
-namespace StandardAST {
-  type Lambda = {
-    var : identifier
-  } | {
-    operator : Lambda
-    operand : Lambda
-  }| {
-    abs: identifier
-    body: Lambda
-  }
-
-  let identity : Lambda =  { abs:'x', body: {var:'x'} }
-
-  let omega :Lambda =
-      {
-          operator: { abs:'x', body: {operator: {var:'x'}, operand : {var:'x'} }},
-          operand : { abs:'x', body: {operator: {var:'x'}, operand : {var:'x'} }}
-      }
-}
-
 ////////////// Lambda term with alternating AST
-type Var = {
-  var: identifier
+type VarApp = { name: identifier, arguments: Abs[] }
+type App = { app: Abs[] }
+type Abs = { abs: identifier[],  body: App | VarApp }
+
+/// The alternating-AST of a lambda term always starts with a lambda node
+type AltLambda = Abs
+
+/// The three types of alternating-AST tree tokens
+type AltNodes = VarApp | App | Abs
+
+function isAbs(t: AltNodes): t is Abs { return (t as Abs).abs !== undefined }
+function isApp(t: AltNodes): t is App { return (t as App).app !== undefined }
+function isVarApp(t: AltNodes): t is VarApp { return (t as VarApp).arguments !== undefined }
+function isIdentifier(t: AltNodes | AltNodes[] | identifier): t is identifier { return (t as identifier).search !== undefined }
+
+function isSingleton(t: AltNodes | AltNodes[]): t is AltNodes { return (t as AltNodes[]).length === undefined }
+
+// add a dummy lambda if necessary
+let dummyLambda = (l: AltNodes) => isAbs(l) ? l : { abs: [], body: l }
+
+let abs = (variables: identifier[], body: App | VarApp | Abs | identifier): Abs =>
+{
+  let applicationBody: App | Abs | VarApp = isIdentifier(body) ? { name: body, arguments: [] } : body
+
+  return isAbs(applicationBody)
+    ? { abs: variables.concat(applicationBody.abs), body: applicationBody.body }
+    : { abs: variables, body: applicationBody }
 }
 
-type App = {
-  operator : Abs
-  operands : Abs[]
-}
+let app = (operator: Abs | identifier, operands: Abs | Abs[] | identifier): Abs =>
+{
+    let unappliedVar = (name: identifier): Abs => { return { abs: [], body: { name: name, arguments: [] } } }
 
-type Abs = {
-  abs: string[]
-  body: App | Var
-}
+    /// If operator is just an identifier then convert it into a variable node
+    let rator: Abs = isIdentifier(operator) ? unappliedVar(operator) : operator
 
-type AltLambda = Var | App | Abs
+    /// If operand is just an identifier then convert it into a variable node
+    let rands = isIdentifier(operands) ? unappliedVar(operands) : operands
 
-let identity : AltLambda = { abs:['x'], body: {var:'x'}}
+    /// if single operand then make it into a singleton array
+    let randsAsArray = isSingleton(rands) ? [rands] : rands
 
-let omega :AltLambda =
-  {abs:[],
-   body:
-    {
-     operator: { abs: ['x'], body: { operator: { abs: [], body: { var: 'x' } }, operands: [{ abs: [], body: { var:'x'}} ] }},
-     operands: [{ abs: ['x'], body: { operator: { abs: [], body: { var: 'x' } }, operands: [{ abs: [], body: { var:'x'}}] }} ]
+    let randsDummified = randsAsArray.map(dummyLambda)
+
+    if (rator.abs === []) {
+      if (isApp(rator.body)) {
+        /// combine consecutive application
+        return { abs: [], body: { app: rator.body.app.concat(randsDummified) } }
+      } else if (isVarApp(rator.body)) {
+        /// combine consecutive application
+        return { abs: [], body: { name: rator.body.name, arguments: rator.body.arguments.concat(randsDummified) } }
+      } else {
+        throw "Impossible case: abstraction necessarily alternate with application, by construction."
+      }
+    } else {
+      return { abs: [], body: { app: [rator].concat(randsDummified) } }
     }
-  }
+}
 
-function isAbs(t: AltLambda): t is Abs { return (t as Abs).abs !== undefined }
-function isApp(t: AltLambda): t is App { return (t as App).operator !== undefined }
-function isVar(t: AltLambda): t is Var { return (t as Var).var !== undefined }
 
-function printLambdaTerm (t:AltLambda) {
-    if(isVar(t)) {
-      console.log("variable {0}", t.var)
+/// Term examples
+let identity: AltLambda = abs(['x'], 'x')
+let delta: AltLambda = abs(['x'], app('x', 'x'))
+var omega: AltLambda = app(delta, delta)
+
+/// Neil Jones's example: J = (\u.u(x u))(\v.v y)
+let neil: AltLambda =
+  app(abs(['u'], app('u', app('x', 'u'))),
+      abs(['v'], app('u', 'v')))
+//////////
+
+function printLambdaTerm (t:AltNodes) {
+    if(isVarApp(t)) {
+      console.log("variable {0}", t)
     } else if (isApp(t)) {
-      console.log("app {0} - {1}", t.operator, t.operands)
-      printLambdaTerm(t.operator)
-      t.operands.forEach(printLambdaTerm);
+      let [operator, ...operands] = t.app
+      console.log("app {0} - {1}", operator, operands)
+      printLambdaTerm(operator)
+      operands.forEach(printLambdaTerm);
     } else if (isAbs(t)) {
       console.log("abs {0} . {1}", t.abs, t.body)
       printLambdaTerm(t.body)
     }
 }
-
 
 ////////////// Tree nodes for alternating AST
 /// Node scope
@@ -112,33 +131,33 @@ function lambdaTermToTreeNodes(
     // the tree root
     root:Abs,
     /// the node of the alternating AST to convert
-    t:AltLambda,
+    t:AltNodes,
     /// the parent note of t, with associated scope
-    parent:([AltLambda,Scope])|undefined,
+    parent:([AltNodes,Scope])|undefined,
     /// the list of binder nodes from the root
     bindersFromRoot:[Abs,Scope][],
     /// map that assigns an index to every free variable seen so far
     freeVariableIndex:identifier[]
 ) : TermNode
 {
-  if(isVar(t)) {
-    let x = t.var
+  if(isVarApp(t)) {
+    let variableName = t.name
     /// find the variable binder
     let binder : Enabler | undefined =
       bindersFromRoot
       .reverse()
       .map((b,i) => {
           let [bNode, bScope] = b
-          let j = bNode.abs.indexOf(x)
+          let j = bNode.abs.indexOf(variableName)
           return j<0 ? undefined : { node: bNode, depth:2*i+1, label: j, scope: bScope }
       })
       .filter(b=> b != undefined)[0];
     // no binder -> x is a free variable and its enabler is the root
     if(binder === undefined) {
       // lookup the variable index
-      let j = freeVariableIndex.indexOf(x)
+      let j = freeVariableIndex.indexOf(variableName)
       if(j<0) {
-        j = freeVariableIndex.push(x)
+        j = freeVariableIndex.push(variableName)
       }
       binder = { label: j, depth:2*bindersFromRoot.length+1, scope: Scope.External }
     }
@@ -148,11 +167,12 @@ function lambdaTermToTreeNodes(
       children : []
     }
   } else if (isApp(t)) {
+    let [operator, ...operands] = t.app
     return {
       label : "@",
       enabler : Initial.InitialNode,
-      children : [lambdaTermToTreeNodes(root, t.operator, [t,Scope.External], bindersFromRoot, freeVariableIndex)]
-                  .concat(t.operands.map(o => lambdaTermToTreeNodes(root, o, [t,Scope.External], bindersFromRoot, freeVariableIndex)))
+      children : [lambdaTermToTreeNodes(root, operator, [t,Scope.External], bindersFromRoot, freeVariableIndex)]
+                  .concat(operands.map(o => lambdaTermToTreeNodes(root, o, [t,Scope.External], bindersFromRoot, freeVariableIndex)))
     }
   } else { //if (isAbs(t)) {
     /// A root node is external, other nodes have the scope of their parent
@@ -165,6 +185,7 @@ function lambdaTermToTreeNodes(
   }
 
 }
+
 var t = lambdaTermToTreeNodes(omega, omega, undefined, [], [])
 
 console.log("test")
@@ -186,10 +207,18 @@ type Pointer =
 }
 
 /// Ghosts node
-type GhostNode = {
-  label : "GhostVar" | "GhostLmd",
-  scope : Scope /// cached scope (recoverable)
+type GhostVar = {
+  label: 'GhostVar',
+  scope: Scope /// cached scope (recoverable)
 }
+
+type GhostLmd = {
+  label: 'GhostLmd',
+  names: identifier[],
+  scope: Scope /// cached scope (recoverable)
+}
+
+type GhostNode = GhostVar | GhostLmd
 
 /// An node occurrence in a justified sequence
 type Occurrence =
@@ -200,11 +229,11 @@ type Occurrence =
   justifier : Pointer | Initial
 }
 
-function isGhost(t: TermNode | GhostNode): t is GhostNode { return (t as GhostNode) !== undefined }
-function isStructural(t: TermNode | GhostNode): t is TermNode { return (t as TermNode) !== undefined }
+function isGhost(t: TermNode | GhostNode): t is GhostNode { return (t as GhostNode).label !== undefined }
+function isStructural(t: TermNode | GhostNode): t is TermNode { return (t as TermNode).label !== undefined }
 
-let isVarOccurrence = (o: Occurrence) => isGhost(o.node) ? o.node.label === "GhostVar" : isVarLabel(o.node.label)
-let isAbsOccurrence = (o: Occurrence) => isGhost(o.node) ? o.node.label === "GhostLmd" : isAbsLabel(o.node.label)
+let isVarOccurrence = (o: Occurrence) => isGhost(o.node) ? o.node.label === 'GhostVar' : isVarLabel(o.node.label)
+let isAbsOccurrence = (o: Occurrence) => isGhost(o.node) ? o.node.label === 'GhostLmd' : isAbsLabel(o.node.label)
 let isAppOccurrence = (o: Occurrence) => isGhost(o.node) ? false : isAppLabel(o.node.label)
 
 let scopeOf = (o: Occurrence) => isGhost(o.node)
@@ -311,6 +340,12 @@ function dynamicArity (t:JustSeq) : number {
   return max
 }
 
+type Extension = void | Occurrence | Occurrence[]
+
+function isMaximal(e: Extension): e is void { return (e as void) !== undefined }
+function isDeterministic(t: Extension): t is Occurrence { return (t as Occurrence).node !== undefined }
+function isNondeterministic(t: Extension): t is Occurrence[] { return (t as Occurrence[]).length !== undefined }
+
 /// extend a traversal
 function extendTraversal (treeRoot:TermNode, t:JustSeq) : (void | Occurrence | Occurrence[])
 {
@@ -338,7 +373,7 @@ function extendTraversal (treeRoot:TermNode, t:JustSeq) : (void | Occurrence | O
       return {
         node: isStructural(m.node)
               ? m.node.children[lastOccurrence.justifier.label]
-              : { label: "GhostLmd", scope: scopeOf(m) },
+              : { label: "GhostLmd", names: [], scope: scopeOf(m) },
         justifier: { distance: distance, label: lastOccurrence.justifier.label }
       }
     } else {
@@ -382,6 +417,28 @@ function extendTraversal (treeRoot:TermNode, t:JustSeq) : (void | Occurrence | O
   }
 }
 
+function traverse(treeRoot: TermNode, t: JustSeq) {
+  var t: JustSeq = []
+  while (true) {
+    var next = extendTraversal(treeRoot, t)
+    if (isMaximal(next)) {
+      return t;
+    } else if(isDeterministic(next)) {
+      t = t.concat(next) // append the traversed occurrence
+    } else {
+      /// external variable with multiple non-deterministic choices
+      for(let o of next) {
+        let t2 :JustSeq = t.concat(o)
+        traverse(treeRoot, t2)
+      }
+    }
+  }
+}
+
+/// Evaluate the term with term tree root treeRoot
+function evaluate(treeRoot: TermNode, t: JustSeq) {
+  traverse(treeRoot, [])
+}
 
 /// core projection
 
