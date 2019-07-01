@@ -21,6 +21,7 @@ function isSingleton(t: AltNodes | AltNodes[]): t is AltNodes { return (t as Alt
 
 // add a dummy lambda if necessary
 let dummyLambda = (l: AltNodes) => isAbs(l) ? l : { abs: [], body: l }
+let isDummy = (t: Abs): boolean => t.abs.length == 0
 
 let abs = (variables: identifier[], body: App | VarApp | Abs | identifier): Abs =>
 {
@@ -46,7 +47,7 @@ let app = (operator: Abs | identifier, operands: Abs | Abs[] | identifier): Abs 
 
     let randsDummified = randsAsArray.map(dummyLambda)
 
-    if (rator.abs === []) {
+    if (isDummy(rator)) {
       if (isApp(rator.body)) {
         /// combine consecutive application
         return { abs: [], body: { app: rator.body.app.concat(randsDummified) } }
@@ -73,19 +74,48 @@ let neil: AltLambda =
       abs(['v'], app('u', 'v')))
 //////////
 
-function printLambdaTerm (t:AltNodes) {
+
+type Pretty =
+  {
+    prettyPrint: string
+    mustBracketIfArgument: boolean
+  }
+
+function bracketize(t: Pretty): string {
+  return t.mustBracketIfArgument ? '(' + t.prettyPrint + ')' : t.prettyPrint
+}
+
+function printLambdaTerm(t: AltNodes): Pretty {
     if(isVarApp(t)) {
-      console.log("variable {0}", t)
+      return  {
+        prettyPrint: t.name + (t.arguments.length == 0 ? '' : ' ' + t.arguments.map(x => bracketize(printLambdaTerm(x))).concat()),
+        mustBracketIfArgument: t.arguments.length > 0
+      }
     } else if (isApp(t)) {
       let [operator, ...operands] = t.app
-      console.log("app {0} - {1}", operator, operands)
-      printLambdaTerm(operator)
-      operands.forEach(printLambdaTerm);
-    } else if (isAbs(t)) {
-      console.log("abs {0} . {1}", t.abs, t.body)
-      printLambdaTerm(t.body)
+      return {
+        prettyPrint: bracketize(printLambdaTerm(operator)) + operands.map(x => bracketize(printLambdaTerm(x))).concat(),
+        mustBracketIfArgument: true
+      }
+    } else { //if (isAbs(t)) {
+      let bodyPrint = printLambdaTerm(t.body)
+      if (isDummy(t)) {
+        return {
+          prettyPrint: bodyPrint.prettyPrint,
+          mustBracketIfArgument: bodyPrint.mustBracketIfArgument
+        }
+      } else {
+        return {
+          prettyPrint: '\lambda ' + t.abs.join(' ') + '.' + bodyPrint.prettyPrint,
+          mustBracketIfArgument: true
+        }
+      }
     }
 }
+
+console.log(printLambdaTerm(identity).prettyPrint)
+console.log(printLambdaTerm(omega).prettyPrint)
+console.log(printLambdaTerm(neil).prettyPrint)
 
 ////////////// Tree nodes for alternating AST
 /// Node scope
