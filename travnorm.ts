@@ -24,7 +24,7 @@ namespace StandardAST {
 
 ////////////// Lambda term with alternating AST
 type Var = {
-  name: identifier
+  var: identifier
 }
 
 type App = {
@@ -39,30 +39,24 @@ type Abs = {
 
 type AltLambda = Var | App | Abs
 
-let identity : AltLambda = { abs:['x'], body: {name:'x'}}
+let identity : AltLambda = { abs:['x'], body: {var:'x'}}
 
 let omega :AltLambda =
   {abs:[],
    body:
     {
-      operator: { abs:['x'], body: {operator: { abs:[], body: {name:'x'}}, operands: [ { abs:[], body: {name:'x'}} ] }},
-      operands: [ { abs:['x'], body: {operator: { abs:[], body: {name:'x'}}, operands: [ { abs:[], body: {name:'x'}}] }} ]
+     operator: { abs: ['x'], body: { operator: { abs: [], body: { var: 'x' } }, operands: [{ abs: [], body: { var:'x'}} ] }},
+     operands: [{ abs: ['x'], body: { operator: { abs: [], body: { var: 'x' } }, operands: [{ abs: [], body: { var:'x'}}] }} ]
     }
   }
 
-function isAbs(t: AltLambda): t is Abs {
-  return (t as Abs).abs !== undefined;
-}
-function isApp(t: AltLambda): t is App {
-  return (t as App).operator !== undefined;
-}
-function isVar(t: AltLambda): t is Var {
-  return (t as Var).name !== undefined;
-}
+function isAbs(t: AltLambda): t is Abs { return (t as Abs).abs !== undefined }
+function isApp(t: AltLambda): t is App { return (t as App).operator !== undefined }
+function isVar(t: AltLambda): t is Var { return (t as Var).var !== undefined }
 
 function printLambdaTerm (t:AltLambda) {
     if(isVar(t)) {
-      console.log("variable {0}", t.name)
+      console.log("variable {0}", t.var)
     } else if (isApp(t)) {
       console.log("app {0} - {1}", t.operator, t.operands)
       printLambdaTerm(t.operator)
@@ -128,7 +122,7 @@ function lambdaTermToTreeNodes(
 ) : TermNode
 {
   if(isVar(t)) {
-    let x = t.name
+    let x = t.var
     /// find the variable binder
     let binder : Enabler | undefined =
       bindersFromRoot
@@ -191,14 +185,34 @@ type Pointer =
   label : number
 }
 
+/// Ghosts node
+type GhostNode = {
+  label : "GhostVar" | "GhostLmd",
+  scope : Scope /// cached scope (recoverable)
+}
+
 /// An node occurrence in a justified sequence
 type Occurrence =
 {
   /// the node it is an occurrence of
-  node : TermNode
+  node: TermNode | GhostNode
   /// pointer to the justifying occurrence
   justifier : Pointer | Initial
 }
+
+function isGhost(t: TermNode | GhostNode): t is GhostNode { return (t as GhostNode) !== undefined }
+function isStructural(t: TermNode | GhostNode): t is TermNode { return (t as TermNode) !== undefined }
+
+let isVarOccurrence = (o: Occurrence) => isGhost(o.node) ? o.node.label === "GhostVar" : isVarLabel(o.node.label)
+let isAbsOccurrence = (o: Occurrence) => isGhost(o.node) ? o.node.label === "GhostLmd" : isAbsLabel(o.node.label)
+let isAppOccurrence = (o: Occurrence) => isGhost(o.node) ? false : isAppLabel(o.node.label)
+
+let scopeOf = (o: Occurrence) => isGhost(o.node)
+  ? o.node.scope
+  : o.node.enabler == Initial.InitialNode ? <Scope>Scope.External : o.node.enabler.scope
+
+let isInternal = (o: Occurrence) => scopeOf(o) == Scope.Internal
+let isExternal = (o: Occurrence) => scopeOf(o) == Scope.External
 
 /// A justified sequence of node occurrences
 type JustSeq = Occurrence[]
@@ -210,11 +224,11 @@ function* pview (t:JustSeq) {
     let lastOccurrence = t[i]
     yield lastOccurrence
 
-    if (isVarLabel(lastOccurrence.node.label)) {
+    if (isVarOccurrence(lastOccurrence)) {
       i--
-    } else if (isAppLabel(lastOccurrence.node.label)) {
+    } else if (isAppOccurrence(lastOccurrence)) {
       i--
-    } else if (isAbsLabel(lastOccurrence.node.label)) {
+    } else if (isAbsOccurrence(lastOccurrence)) {
       if(lastOccurrence.justifier === Initial.InitialNode) {
         i=-1 // initial node => end of P-view
       } else {
@@ -230,11 +244,11 @@ function* pview_delta (t:JustSeq) {
   var k=0
   while(i>=0){
     let lastOccurrence = t[i]
-    if (isVarLabel(lastOccurrence.node.label)) {
+    if (isVarOccurrence(lastOccurrence)) {
       k = 1
-    } else if (isAppLabel(lastOccurrence.node.label)) {
+    } else if (isAppOccurrence(lastOccurrence)) {
       k = 1
-    } else if (isAbsLabel(lastOccurrence.node.label)) {
+    } else if (isAbsOccurrence(lastOccurrence)) {
       if(lastOccurrence.justifier === Initial.InitialNode) {
         return // initial node => end of P-view
       } else {
@@ -263,37 +277,24 @@ function distanceToJustifier (t:JustSeq, enablerDepth:number)
 
 /// Arity of a node occurrence
 function arity(o:Occurrence) : number {
-  let l = o.node.label
-  if (isAppLabel(l)) {
+  if(isGhost(o.node)) {
+    return 0
+  } else if (isAppOccurrence(o)) {
     return o.node.children.length-1
-  } else if (isVarLabel(l)) {
+  } else if (isVarOccurrence(o)) {
     return o.node.children.length
   } else { // if (isAbsLabel(l)) {
     return o.node.label.length
   }
 }
 
-function isGhostLambda(o:Occurrence) : boolean {
-  let l = o.node.label
-  if (isAppLabel(l)) {
-    return false
-  } else if (isVarLabel(l)) {
-    return false
-  } else { // if (isAbsLabel(l)) {
-    return o.node.children.length == 0
-  }
-}
-
-function isStructuralLambda(o:Occurrence) {
-  return !(isGhostLambda(o))
-}
-
-function scopeOf(o:Occurrence) {
-  return o.node.enabler == Initial.InitialNode ? <Scope>Scope.External : o.node.enabler.scope
+function dynamicArity (t:JustSeq) : number {
+/// TODO
+return 0
 }
 
 /// extend a traversal
-function extendTraversal (treeRoot:TermNode, t:JustSeq) : Occurrence
+function extendTraversal (treeRoot:TermNode, t:JustSeq) : (void | Occurrence | Occurrence[])
 {
   let lastIndex = t.length-1
   let lastOccurrence = t[lastIndex]
@@ -303,31 +304,41 @@ function extendTraversal (treeRoot:TermNode, t:JustSeq) : Occurrence
       node: treeRoot,
       justifier: Initial.InitialNode
     }
-  } else if (isAppLabel(lastOccurrence.node.label)) {
+  } else if (isStructural(lastOccurrence.node) && isAppOccurrence(lastOccurrence)) {
     return {
       node: lastOccurrence.node.children[0], // traverse the operator node
       justifier : { distance:1, label: 0 }
     }
-  } else if (isVarLabel(lastOccurrence.node.label)) {
+  } else if (isVarOccurrence(lastOccurrence)) {
     if(lastOccurrence.justifier === Initial.InitialNode) {
       throw "Impossible: a variable occurrence necessarily has a justifier."
     }
-    if(scopeOf(lastOccurrence) == Scope.Internal) {
+    if (isInternal(lastOccurrence)) {
       let distance = 1+lastOccurrence.justifier.distance
+      // Occurrence `m` from the paper, is the node preceding the variable occurrence's justifier.
+      let m = t[lastIndex - distance]
       return {
-        node: t[lastIndex-distance].node,
-        justifier : { distance:distance, label: lastOccurrence.justifier.label }
+        node: isStructural(m.node)
+              ? m.node.children[lastOccurrence.justifier.label]
+              : { label: "GhostLmd", scope: scopeOf(m) },
+        justifier: { distance: distance, label: lastOccurrence.justifier.label }
       }
     } else {
       let da = dynamicArity(t)
-
-      return (i => {
-        node: t[lastIndex-1].node,
-        justifier : { distance:1, label: i }
-      })
+      if(da === 0) {
+        return
+      } else {
+        var possibleChildren =
+          Array.apply(null, Array(da))
+               .map(function (_,i) { return {
+                  node: lastOccurrence.node, //previousNode
+                  justifier : { distance:1, label: i }
+                }})
+        return possibleChildren
+      }
     }
-  } else if (isAbsLabel(lastOccurrence.node.label)) {
-    if(isStructuralLambda(lastOccurrence)) {
+  } else {// if (isAbsLabel(lastOccurrence.node.label)) {
+    if(isStructural(lastOccurrence.node)) {
       let bodyNode = lastOccurrence.node.children[0]
       return {
         node: bodyNode, // traverse the body of the lambda
@@ -346,24 +357,14 @@ function extendTraversal (treeRoot:TermNode, t:JustSeq) : Occurrence
       let i = lastOccurrence.justifier.label
       let j = arity(mu) + i - arity(m)
       return {
-        node: {
-          label : "Var", /// A ghost variable, instantiated on-the-fly
-          enabler : {
-              label : j,
-              depth : 3, // ghost lambda binder is always 3 nodes above the ghost variable
-              scope: scopeOf(m)
-          },
-          children : []
-        },
-        justifier : {
-          distance: justifierDistance,
-          label: j
-        }
+        node: { label : "GhostVar", scope: scopeOf(m) },
+        justifier : { distance: justifierDistance, label: j }
       }
     }
+  }
 }
 
 
 /// core projection
 
-/// read out
+/// read-out
