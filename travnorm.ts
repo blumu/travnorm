@@ -288,9 +288,27 @@ function arity(o:Occurrence) : number {
   }
 }
 
+/// Dynamic arity of a traversal (ending with an external variable)
 function dynamicArity (t:JustSeq) : number {
-/// TODO
-return 0
+  var i = t.length - 1
+  var sum = 0
+  var max = 0
+  while (i >= 0) {
+    let lastOccurrence = t[i]
+    if (isAbsOccurrence(lastOccurrence)) {
+      if (isExternal(lastOccurrence)) {
+        return max
+      } else {
+        sum += arity(lastOccurrence)
+      }
+    } else if (isVarOccurrence(lastOccurrence)
+      || isAppOccurrence(lastOccurrence)) {
+      sum -= arity(lastOccurrence)
+    }
+    max = Math.max(sum, max)
+    i--
+  }
+  return max
 }
 
 /// extend a traversal
