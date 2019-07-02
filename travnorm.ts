@@ -139,6 +139,19 @@ interface TermNode {
   children : TermNode[]
 }
 
+function findLastIndex<T>(
+    a:T[],
+    condition : (element:T, index:number) => boolean
+) : undefined | [number, T] {
+  for (var i = a.length-1; i>=0; i--) {
+    let e = a[i]
+    if (condition(e, i)) {
+      return [i, e]
+    }
+  }
+  return undefined
+}
+
 function lambdaTermToTreeNodes(
     // the tree root
     root:Abs,
@@ -155,16 +168,18 @@ function lambdaTermToTreeNodes(
   if(isVarApp(t)) {
     let variableName = t.name
     /// find the variable binder
-    let binder : Enabler | undefined =
-      bindersFromRoot
-      .reverse()
-      .map((b,i) => {
-          let j = b.abs.indexOf(variableName)
-          return j<0 ? undefined : { node: b, depth:2*i+1, label: j+1 }
-      })
-      .filter(b=> b !== undefined)[0];
+    let binderLookup = findLastIndex(bindersFromRoot, b => b.abs.indexOf(variableName) >= 0)
+
+    var binder : Enabler;
+    if (binderLookup !== undefined) {
+      let [binderIndex, b] = binderLookup
+      let j = b.abs.indexOf(variableName)
+      let binderDistance = bindersFromRoot.length - binderIndex
+      binder = { depth: 2 * binderDistance - 1, label: j + 1 }
+      console.log('bindersFromRoot:' + bindersFromRoot.map(x => '[' + x.abs.join(' - ') + ']').join('\\') + ' varName:' + variableName + ' binderIndex:' + binderIndex + ' j:' + j + ' depth:' + binder.depth + ' binderVarNames:' + b.abs.join('-'))
+    }
     // no binder -> x is a free variable and its enabler is the root
-    if(binder === undefined) {
+    else {
       // lookup the variable index
       let j = freeVariableIndex.indexOf(variableName)
       if(j<0) {
