@@ -1,3 +1,5 @@
+let verbose = false
+
 /////////////// Variable names
 type identifier = string
 
@@ -176,7 +178,7 @@ function lambdaTermToTreeNodes(
       let j = b.abs.indexOf(variableName)
       let binderDistance = bindersFromRoot.length - binderIndex
       binder = { depth: 2 * binderDistance - 1, label: j + 1 }
-      console.log('bindersFromRoot:' + bindersFromRoot.map(x => '[' + x.abs.join(' - ') + ']').join('\\') + ' varName:' + variableName + ' binderIndex:' + binderIndex + ' j:' + j + ' depth:' + binder.depth + ' binderVarNames:' + b.abs.join('-'))
+      verbose && console.log('bindersFromRoot:' + bindersFromRoot.map(x => '[' + x.abs.join(' - ') + ']').join('\\') + ' varName:' + variableName + ' binderIndex:' + binderIndex + ' j:' + j + ' depth:' + binder.depth + ' binderVarNames:' + b.abs.join('-'))
     }
     // no binder -> x is a free variable and its enabler is the root
     else {
@@ -583,13 +585,13 @@ function enumerateAllTraversals(treeRoot: TermNode, t: JustSeq) {
       return t
     } else if(isDeterministic(next)) {
       t = t.concat(next) // append the traversed occurrence
-      //console.log("extended:" + printSequence(t))
+      verbose && console.log("extended:" + printSequence(t))
     } else {
       /// external variable with multiple non-deterministic choices
-      console.log("External variable reached:" + printSequence(t))
+      verbose && console.log("External variable reached:" + printSequence(t))
       for(let o of next) {
         let t2 :JustSeq = t.concat(o)
-        //console.log("non-det:" + printSequence(t2))
+        verbose && console.log("non-det:" + printSequence(t2))
         enumerateAllTraversals(treeRoot, t2)
       }
       return
