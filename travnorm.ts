@@ -452,15 +452,17 @@ function extendTraversal (treeRoot:TermNode, t:JustSeq) : (void | Occurrence | O
       if (lastOccurrence.justifier == "Initial") {
         throw('Impossible: ghost lambda are always justified.')
       }
-      let mu = t[lastIndex-lastOccurrence.justifier.distance]
+      let m = t[lastIndex-lastOccurrence.justifier.distance]
+
       let justifierDistance = lastOccurrence.justifier.distance + 2
-      let m = t[nextIndex - justifierDistance]
+      let mu = t[nextIndex - justifierDistance]
       let i = lastOccurrence.justifier.label
+      //console.log('m:' + arity(m) + ', mu:' + arity(mu) + ', i:' + i)
       return {
         node: { label : "GhostVar"},
         justifier : { distance: justifierDistance,
                       label: arity(mu) + i - arity(m) },
-        scope : m.scope
+        scope : mu.scope
       }
     }
   } else {
@@ -474,7 +476,7 @@ function printPointer(j:Pointer|"Initial") {
 function printOccurrence(o:Occurrence) : string {
   if(isGhost(o.node)){
     if(o.node.label == "GhostLmd") {
-      return '[$]' + printPointer(o.justifier)
+      return ' $['+ o.node.names + ']' + printPointer(o.justifier)
     } else if (o.node.label == "GhostVar") {
       return '#' + printPointer(o.justifier)
     } else {
@@ -499,11 +501,70 @@ function printSequence(t:JustSeq) {
   return t.map(printOccurrence).join('--')
 }
 
+
+function getBoundVariables(o: Occurrence): identifier[] {
+  if (isAbsOccurrence(o)) {
+    if (isStructural(o.node)) {
+      if (isAbsLabel(o.node.label)) {
+        return o.node.label
+      } else {
+        throw "Not a lambda occurrence!"
+      }
+    } else {
+      return []
+    }
+  } else {
+    throw "Not a lambda occurrence!"
+  }
+}
+
+/// core projection
+function* coreProjection(t: JustSeq) {
+  var pendingLambdas: identifier[] = []
+  for (let i = t.length - 1; i >= 0; i--) {
+    let o = t[i]
+    if (isExternal(o)) {
+      if (isAbsOccurrence(o)) {
+        if (pendingLambdas.length >0){
+          o.node.label = getBoundVariables(o).concat(pendingLambdas)
+        }
+      } else if (isVarOccurrence(o) || isAppOccurrence(o)) {
+          // patch link distance to account for removed occurrences
+          if(o.justifier == "Initial") {
+            throw "Impossible: variable cannot be initial"
+          } else {
+            for (let j = i - o.justifier.distance; j<i; j++) {
+              if(isInternal(t[j])) {
+                o.justifier.distance--
+              }
+            }
+          }
+      } else {
+        throw "Not possible"
+      }
+      pendingLambdas = []
+      yield o
+    } else {
+      if (isAbsOccurrence(o)) {
+        pendingLambdas = pendingLambdas.concat(getBoundVariables(o))
+      } else if (isVarOccurrence(o) || isAppOccurrence(o)) {
+        let a = arity(o)
+        for (let k = 1; k <= a; k++)
+          pendingLambdas.pop()
+      } else {
+        throw "Not possible"
+      }
+    }
+  }
+}
+
 function enumerateAllTraversals(treeRoot: TermNode, t: JustSeq) {
   while(true) {
     var next = extendTraversal(treeRoot, t)
     if (isMaximal(next)) {
       console.log("Maximal traversal reached:" + printSequence(t))
+      let p = Array.from(coreProjection(t)).reverse()
+      console.log("               projection:" + printSequence(p))
       return t
     } else if(isDeterministic(next)) {
       t = t.concat(next) // append the traversed occurrence
@@ -530,7 +591,5 @@ function evaluate(term: AltLambda) {
 }
 
 evaluate(neil)
-
-/// core projection
 
 /// read-out
