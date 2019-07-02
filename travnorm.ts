@@ -45,23 +45,22 @@ let app = (operator: Abs | identifier, operands: Abs | Abs[] | identifier): Abs 
     /// if single operand then make it into a singleton array
     let randsAsArray = isSingleton(rands) ? [rands] : rands
 
-    let randsDummified = randsAsArray.map(dummyLambda)
+    let randsDummyfied = randsAsArray.map(dummyLambda)
 
     if (isDummy(rator)) {
       if (isApp(rator.body)) {
         /// combine consecutive application
-        return { abs: [], body: { app: rator.body.app.concat(randsDummified) } }
+        return { abs: [], body: { app: rator.body.app.concat(randsDummyfied) } }
       } else if (isVarApp(rator.body)) {
         /// combine consecutive application
-        return { abs: [], body: { name: rator.body.name, arguments: rator.body.arguments.concat(randsDummified) } }
+        return { abs: [], body: { name: rator.body.name, arguments: rator.body.arguments.concat(randsDummyfied) } }
       } else {
         throw "Impossible case: abstraction necessarily alternate with application, by construction."
       }
     } else {
-      return { abs: [], body: { app: [rator].concat(randsDummified) } }
+      return { abs: [], body: { app: [rator].concat(randsDummyfied) } }
     }
 }
-
 
 /// Term examples
 let identity: AltLambda = abs(['x'], 'x')
@@ -161,7 +160,7 @@ function lambdaTermToTreeNodes(
       .reverse()
       .map((b,i) => {
           let j = b.abs.indexOf(variableName)
-          return j<0 ? undefined : { node: b, depth:2*i+1, label: j }
+          return j<0 ? undefined : { node: b, depth:2*i+1, label: j+1 }
       })
       .filter(b=> b !== undefined)[0];
     // no binder -> x is a free variable and its enabler is the root
@@ -171,7 +170,7 @@ function lambdaTermToTreeNodes(
       if(j<0) {
         j = freeVariableIndex.push(variableName)
       }
-      binder = { label: j, depth:2*bindersFromRoot.length-1}
+      binder = { label: root.abs.length + j, depth:2*bindersFromRoot.length-1}
     }
     return {
       label : "Var",
@@ -240,11 +239,13 @@ type Occurrence =
   scope : Scope
 }
 
-function isGhost(t: TermNode | GhostNode): t is GhostNode { let g = (t as GhostNode); return g.label == 'GhostVar' || g.label == 'GhostLmd' }
+function isGhost(t: TermNode | GhostNode): t is GhostNode {
+  let g = (t as GhostNode)
+  return g.label !== undefined && (g.label == 'GhostVar' || g.label == 'GhostLmd') }
 function isStructural(t: TermNode | GhostNode): t is TermNode { return !isGhost(t) }
 
-let isVarOccurrence = (o: Occurrence) => isGhost(o.node) ? o.node.label === 'GhostVar' : isVarLabel(o.node.label)
-let isAbsOccurrence = (o: Occurrence) => isGhost(o.node) ? o.node.label === 'GhostLmd' : isAbsLabel(o.node.label)
+let isVarOccurrence = (o: Occurrence) => isGhost(o.node) ? o.node.label == 'GhostVar' : isVarLabel(o.node.label)
+let isAbsOccurrence = (o: Occurrence) => isGhost(o.node) ? o.node.label == 'GhostLmd' : isAbsLabel(o.node.label)
 let isAppOccurrence = (o: Occurrence) => isGhost(o.node) ? false : isAppLabel(o.node.label)
 
 let isInternal = (o: Occurrence) => o.scope == Scope.Internal
@@ -335,11 +336,11 @@ function dynamicArity (t:JustSeq) : number {
       if (isExternal(lastOccurrence)) {
         return max
       } else {
-        sum += arity(lastOccurrence)
+        sum -= arity(lastOccurrence)
       }
     } else if (isVarOccurrence(lastOccurrence)
       || isAppOccurrence(lastOccurrence)) {
-      sum -= arity(lastOccurrence)
+      sum += arity(lastOccurrence)
     }
     max = Math.max(sum, max)
     i--
@@ -353,19 +354,33 @@ function isDeterministic(e: Extension): e is Occurrence { return (e as Occurrenc
 function isNondeterministic(e: Extension): e is Occurrence[] { return (e as Occurrence[]) !== undefined && (e as Occurrence[]).length !== undefined }
 function isMaximal(e: Extension): e is void { return !isDeterministic(e) && !isNondeterministic(e) }
 
-function childOf(n: TermNode, childIndex: number): TermNode {
-  if(isVarLabel(n.label)) {
-    return n.children[childIndex]
-  } else if (isAppLabel(n.label)) {
-    return n.children[childIndex+1]
+/// childIndex ranges from
+///   1 to artiy(x) for a variable-node
+///   0 to artiy(x) for an @-node
+function childOf(o: Occurrence, childIndex: number): TermNode | GhostNode {
+  if(isGhost(o.node)) {
+    if(o.node.label == "GhostVar"){
+      return { label: "GhostLmd", names: [] }
+    } else {
+      throw "Child lookup on lambda node not needed."
+    }
+  } else if (isVarLabel(o.node.label)) {
+    return childIndex <= arity(o)
+      ? o.node.children[childIndex-1]
+      : { label: "GhostLmd", names: [] }
+  } else if (isAppLabel(o.node.label)) {
+    return childIndex <= arity(o)
+      ? o.node.children[childIndex]
+      : { label: "GhostLmd", names: [] }
   } else {
-    throw "Child lookup on lambda node not needed."
+     throw "Child lookup on lambda node not needed."
   }
 }
 
 /// extend a traversal
 function extendTraversal (treeRoot:TermNode, t:JustSeq) : (void | Occurrence | Occurrence[])
 {
+  let nextIndex = t.length
   let lastIndex = t.length-1
   let lastOccurrence = t[lastIndex]
 
@@ -375,49 +390,44 @@ function extendTraversal (treeRoot:TermNode, t:JustSeq) : (void | Occurrence | O
       justifier: "Initial",
       scope: Scope.External
     }
-  } else if (isStructural(lastOccurrence.node) && isAppLabel(lastOccurrence.node.label) ){
-    //if(!isStructural(lastOccurrence.node))
-//      throw "Impossible: An application node is necessarily structural!"
+  } else if (isStructural(lastOccurrence.node) && isAppOccurrence(lastOccurrence) ){
     return {
       node: lastOccurrence.node.children[0], // traverse the operator node
       justifier : { distance:1, label: 0 },
       scope: Scope.Internal
     }
-  } else if (isGhost(lastOccurrence.node) && lastOccurrence.node.label === 'GhostVar'
-          || isStructural(lastOccurrence.node) && isVarLabel(lastOccurrence.node.label)) {
+  } else if (isVarOccurrence(lastOccurrence)) {
     if (lastOccurrence.justifier == "Initial") {
       throw "Impossible: a variable occurrence necessarily has a justifier."
     }
     if (isInternal(lastOccurrence)) {
-      let distance = 1+lastOccurrence.justifier.distance
+      // (Var) copy-cat rule
+      let distance = 2+lastOccurrence.justifier.distance
       // Occurrence `m` from the paper, is the node preceding the variable occurrence's justifier.
-      let m = t[lastIndex - distance]
-      let a = arity(m)
+      let m = t[nextIndex - distance]
       return {
-        node: isStructural(m.node) && lastOccurrence.justifier.label < a
-                ? childOf(m.node, lastOccurrence.justifier.label)
-                : { label: "GhostLmd", names: [] },
+        node: childOf(m, lastOccurrence.justifier.label),
         justifier: { distance: distance, label: lastOccurrence.justifier.label },
-        scope: Scope.External
+        scope: m.scope
       }
     } else { /// external variable
       let da = dynamicArity(t)
       if(da === 0) {
-        return
+        return /// maximal traversal
       } else {
         var possibleChildren =
           Array.apply(null, Array(da))
-               .map(function (_,i) { return {
-                  node: lastOccurrence.node, //previousNode
-                  justifier : { distance:1, label: i },
+               .map(function (_,i) {
+                let childIndex = i + 1
+                return {
+                  node: childOf(lastOccurrence, childIndex),
+                  justifier : { distance:1, label: childIndex },
                   scope: Scope.External
                 }})
         return possibleChildren
       }
     }
-  } else if ((isGhost(lastOccurrence.node) && lastOccurrence.node.label === 'GhostLmd'
-          || isAbsLabel(lastOccurrence.node.label))) {
-
+  } else if (isAbsOccurrence(lastOccurrence)) {
     if(isStructural(lastOccurrence.node)) {
       let bodyNode = lastOccurrence.node.children[0]
       if (bodyNode.enabler == "Initial") {
@@ -428,7 +438,7 @@ function extendTraversal (treeRoot:TermNode, t:JustSeq) : (void | Occurrence | O
         }
       } else {
         let d = distanceToJustifier(t, bodyNode.enabler.depth)
-        let m = t[lastIndex - d]
+        let m = t[nextIndex -d] // if d= 1 then the justifier is the last occurrence
         return {
           node: bodyNode, // traverse the body of the lambda
           justifier: {
@@ -443,13 +453,13 @@ function extendTraversal (treeRoot:TermNode, t:JustSeq) : (void | Occurrence | O
         throw('Impossible: ghost lambda are always justified.')
       }
       let mu = t[lastIndex-lastOccurrence.justifier.distance]
-      let justifierDistance = lastOccurrence.justifier.distance + 1
-      let m = t[lastIndex-justifierDistance]
+      let justifierDistance = lastOccurrence.justifier.distance + 2
+      let m = t[nextIndex - justifierDistance]
       let i = lastOccurrence.justifier.label
-      let j = arity(mu) + i - arity(m)
       return {
         node: { label : "GhostVar"},
-        justifier : { distance: justifierDistance, label: j },
+        justifier : { distance: justifierDistance,
+                      label: arity(mu) + i - arity(m) },
         scope : m.scope
       }
     }
@@ -458,22 +468,25 @@ function extendTraversal (treeRoot:TermNode, t:JustSeq) : (void | Occurrence | O
   }
 }
 
+function printPointer(j:Pointer|"Initial") {
+  return (j == "Initial") ? '' : '('+j.distance+','+j.label+')'
+}
 function printOccurrence(o:Occurrence) : string {
   if(isGhost(o.node)){
     if(o.node.label == "GhostLmd") {
-      return '[$]'
+      return '[$]' + printPointer(o.justifier)
     } else if (o.node.label == "GhostVar") {
-      return '#'
+      return '#' + printPointer(o.justifier)
     } else {
       throw "Impossible occurrence"
     }
   } else if(isAbsLabel(o.node.label)) {
-    return '[' + o.node.label.join(' ') + ']'
+    return '[' + o.node.label.join(' ') + ']' + printPointer(o.justifier)
   } else if (isVarLabel(o.node.label)) {
     if (o.justifier == "Initial") {
       throw "Impossible: variable cannot be initial."
     } else {
-      return '('+o.justifier.distance +','+o.justifier.label+')'
+      return printPointer(o.justifier)
     }
   } else if (isAppLabel(o.node.label)) {
     return '@'
@@ -486,31 +499,34 @@ function printSequence(t:JustSeq) {
   return t.map(printOccurrence).join('--')
 }
 
-function traverse(treeRoot: TermNode, t: JustSeq) {
-  var t: JustSeq = []
-  while (true) {
+function enumerateAllTraversals(treeRoot: TermNode, t: JustSeq) {
+  while(true) {
     var next = extendTraversal(treeRoot, t)
     if (isMaximal(next)) {
       console.log("Maximal traversal reached:" + printSequence(t))
       return t
     } else if(isDeterministic(next)) {
       t = t.concat(next) // append the traversed occurrence
-      console.log("extended:" + printSequence(t))
+      //console.log("extended:" + printSequence(t))
     } else {
       /// external variable with multiple non-deterministic choices
       console.log("External variable reached:" + printSequence(t))
       for(let o of next) {
         let t2 :JustSeq = t.concat(o)
-        traverse(treeRoot, t2)
+        //console.log("non-det:" + printSequence(t2))
+        enumerateAllTraversals(treeRoot, t2)
       }
+      return
     }
   }
 }
 
 /// Evaluate the term with term tree root treeRoot
 function evaluate(term: AltLambda) {
+  console.log('Traversing ' + printLambdaTerm(term).prettyPrint)
+
   var treeRoot = lambdaTermToTreeNodes(term, term, undefined, [], [])
-  traverse(treeRoot, [])
+  enumerateAllTraversals(treeRoot, [])
 }
 
 evaluate(neil)
