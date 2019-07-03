@@ -1,69 +1,19 @@
 let verbose = false
 
-/////////////// Variable names
-type identifier = string
-
 ////////////// Lambda term with alternating AST
-type Var = { kind: "Var", name: identifier, arguments: Abs[] }
-type App = { kind: "App", operator: Abs, operands: Abs[] }
-type Abs = { kind: "Abs", abs: identifier[], body: App | Var }
+/// The type T represents the type used to label variable nodes
+/// It can be for instance just 'string' or a deBruijn index
+type Var<T> = { kind: "Var", name: T, arguments: Abs<T>[] }
+type App<T> = { kind: "App", operator: Abs<T>, operands: Abs<T>[] }
+type Abs<T> = { kind: "Abs", boundVariables: identifier[], body: App<T> | Var<T> }
 
-/// The alternating-AST of a lambda term always starts with a lambda node
-type AltLambda = Abs
+type LambdaAST<T> = Var<T> | App<T> | Abs<T>
 
-/// The three types of alternating-AST tree tokens
-type AltNodes = Var | App | Abs
-
-function isIdentifier(t: AltNodes | AltNodes[] | identifier): t is identifier { return (t as identifier).search !== undefined }
-function isSingleton(t: AltNodes | AltNodes[]): t is AltNodes { return (t as AltNodes[]).length === undefined }
-
-let abs = (variables: identifier[], body: App | Var | Abs | identifier): Abs =>
-{
-  let applicationBody: App | Abs | Var = isIdentifier(body) ? { kind: "Var", name: body, arguments: [] } : body
-
-  return applicationBody.kind == "Abs"
-    ? { kind: "Abs", abs: variables.concat(applicationBody.abs), body: applicationBody.body }
-    : { kind: "Abs", abs: variables, body: applicationBody }
+interface Printable {
+  toString(): string
 }
 
-let app = (operator: Abs | identifier, operands: Abs | Abs[] | identifier): Abs =>
-{
-    let unappliedVar = (name: identifier): Abs => { return { kind: "Abs", abs: [], body: { kind: "Var", name: name, arguments: [] } } }
-
-    let isDummy = (t: Abs): boolean => t.abs.length == 0
-
-    // If operator is just an identifier then convert it into a variable node
-    let rator: Abs = isIdentifier(operator) ? unappliedVar(operator) : operator
-
-    // If operand is just an identifier then convert it into a variable node
-    let rands = isIdentifier(operands) ? unappliedVar(operands) : operands
-
-    // if single operand then make it into a singleton array
-    let randsAsArray = isSingleton(rands) ? [rands] : rands
-
-    if (isDummy(rator)) {
-      return rator.body.kind == "App"
-        // combine consecutive application
-        ? { kind: "Abs", abs: [], body: { kind: "App", operator: rator.body.operator, operands: rator.body.operands.concat(randsAsArray) } }
-        // combine consecutive application
-        : { kind: "Abs", abs: [], body: { kind: "Var", name: rator.body.name, arguments: rator.body.arguments.concat(randsAsArray) } }
-    } else {
-      return { kind: "Abs", abs: [], body: { kind: "App", operator: rator, operands: randsAsArray } }
-    }
-}
-
-/// Term examples
-let identity: AltLambda = abs(['x'], 'x')
-let delta: AltLambda = abs(['x'], app('x', 'x'))
-var omega: AltLambda = app(delta, delta)
-
-/// Neil Jones's example: J = (\u.u(x u))(\v.v y)
-let neil: AltLambda =
-  app(abs(['u'], app('u', app('x', 'u'))),
-      abs(['v'], app('v', 'y')))
-//////////
-
-
+/// Pretty-printing helper type
 type Pretty =
   {
     prettyPrint: string
@@ -74,64 +24,120 @@ function bracketize(t: Pretty): string {
   return t.mustBracketIfArgument ? '(' + t.prettyPrint + ')' : t.prettyPrint
 }
 
-function printLambdaTerm(t: AltNodes): Pretty {
+function printLambdaTerm<T extends Printable>(t: LambdaAST<T>): Pretty {
   switch(t.kind) {
   case "Var":
     return  {
-      prettyPrint: t.name + (t.arguments.length == 0 ? '' : ' ' + t.arguments.map(x => bracketize(printLambdaTerm(x))).concat()),
+      prettyPrint: '' + (t.name.toString()) + (t.arguments.length == 0 ? '' : ' ' + t.arguments.map(x => bracketize(printLambdaTerm<T>(x))).concat()),
       mustBracketIfArgument: t.arguments.length > 0
     }
   case "App":
     return {
-      prettyPrint: bracketize(printLambdaTerm(t.operator)) + t.operands.map(x => bracketize(printLambdaTerm(x))).concat(),
+      prettyPrint: bracketize(printLambdaTerm<T>(t.operator)) + t.operands.map(x => bracketize(printLambdaTerm<T>(x))).concat(),
       mustBracketIfArgument: true
     }
   case "Abs":
-    let bodyPrint = printLambdaTerm(t.body)
-    return (t.abs.length == 0)
-            ? {
-                prettyPrint: bodyPrint.prettyPrint,
-                mustBracketIfArgument: bodyPrint.mustBracketIfArgument
-            }
-            : {
-                prettyPrint: '\lambda ' + t.abs.join(' ') + '.' + bodyPrint.prettyPrint,
-                mustBracketIfArgument: true
-            }
+    let bodyPrint = printLambdaTerm<T>(t.body)
+    return (t.boundVariables.length == 0)
+          ? {
+              prettyPrint: bodyPrint.prettyPrint,
+              mustBracketIfArgument: bodyPrint.mustBracketIfArgument
+          }
+          : {
+              prettyPrint: '\lambda ' + t.boundVariables.join(' ') + '.' + bodyPrint.prettyPrint,
+              mustBracketIfArgument: true
+          }
   }
 }
+
+/////// Parsing combinators to easily define lambda-terms with AST of type Abs<identifier>
+
+
+function isSingletonAST<T>(t: T | LambdaAST<T> | LambdaAST<T>[]): t is LambdaAST<T> {
+  return (t as LambdaAST<T>).kind !== undefined
+}
+function isLambdaASTArray<T>(t: LambdaAST<T> | LambdaAST<T>[] | T): t is T {
+  return (t as LambdaAST<T>[]).map !== undefined // this feels like a hack, cannot find a better way to do this than ducktype checking...
+}
+function isOfVariableNameType<T>(t: LambdaAST<T> | LambdaAST<T>[] | T): t is T {
+  return !isSingletonAST(t) && !isLambdaASTArray(t)
+}
+
+function abs<T> (variables: identifier[], body: LambdaAST<T> | T): Abs<T> {
+  let applicationBody: LambdaAST<T> = isOfVariableNameType(body) ? { kind: "Var", name: body, arguments: [] } : body
+
+  return applicationBody.kind == "Abs"
+    ? { kind: "Abs", boundVariables: variables.concat(applicationBody.boundVariables), body: applicationBody.body }
+    : { kind: "Abs", boundVariables: variables, body: applicationBody }
+}
+
+function app<T> (operator: Abs<T> | T, operands: Abs<T> | Abs<T>[] | T): Abs<T> {
+  let unappliedVar = (name: T): Abs<T> => { return { kind: "Abs", boundVariables: [], body: { kind: "Var", name: name, arguments: [] } } }
+
+  let isDummy = (t: Abs<T>): boolean => t.boundVariables.length == 0
+
+  // If operator is just an identifier then convert it into a variable node
+  let operatorAsAbs: Abs<T> = isOfVariableNameType<T>(operator) ? unappliedVar(operator) : operator
+
+  // If operand is just an identifier then convert it into a variable node
+  let rands = isOfVariableNameType(operands) ? unappliedVar(operands) : operands
+
+  // if single operand then make it into a singleton array
+  let randsAsArray = isSingletonAST(rands) ? [rands] : rands
+
+  if (isDummy(operatorAsAbs)) {
+    return operatorAsAbs.body.kind == "App"
+      // combine consecutive application
+      ? { kind: "Abs", boundVariables: [], body: { kind: "App", operator: operatorAsAbs.body.operator, operands: operatorAsAbs.body.operands.concat(randsAsArray) } }
+      // combine consecutive application
+      : { kind: "Abs", boundVariables: [], body: { kind: "Var", name: operatorAsAbs.body.name, arguments: operatorAsAbs.body.arguments.concat(randsAsArray) } }
+  } else {
+    return { kind: "Abs", boundVariables: [], body: { kind: "App", operator: operatorAsAbs, operands: randsAsArray } }
+  }
+}
+
+////////////////// Alternating-AST with variable named with string identifiers.
+
+/// Variable names
+type identifier = string
+
+/// Alternating-AST with variable named with string identifiers
+/// The alternating-AST of a lambda term always starts with a lambda node
+type AltLambda = Abs<identifier>
+
+//////////
+/// Term examples
+
+let identity: AltLambda = abs(['x'], 'x')
+let delta: AltLambda = abs(['x'], app('x', 'x'))
+var omega: AltLambda = app(delta, delta)
+
+/// Neil Jones's example: J = (\u.u(x u))(\v.v y)
+let neil: AltLambda =
+  app(abs(['u'], app('u', app('x', 'u'))),
+    abs(['v'], app('v', 'y')))
 
 console.log(printLambdaTerm(identity).prettyPrint)
 console.log(printLambdaTerm(omega).prettyPrint)
 console.log(printLambdaTerm(neil).prettyPrint)
+//////////
 
-/// A deBruijn-like representation of the lambda-term
-/// where the name of a variable occurrence is defined by
-/// a pair of integers referencing to the lambda-binder
+/// A deBruijn-like encoding  where the name of a variable occurrence
+/// is defined by a pair of integers referencing to the lambda-binder
 /// and the index of the name in the lambda-binder
-interface AbsTermNode {
-  label: "Abs"
-  boundVariables: identifier[]
-  body: AppTermNode | VarTermNode
-}
+class DeBruijnPair implements Printable {
+  // Depth is the distance from the variable node to its binder node in the path to the tree root
+  // (1 for the parent node, and so on)
+  depth: number = 0
+  // Index of the variable name in the lambda-binder
+  index: number = 0
 
-interface AppTermNode {
-  label: "@"
-  operator: AbsTermNode
-  operands: AbsTermNode[]
-}
-
-interface VarTermNode {
-  label: "Var"
-  binder: {
-    // Depth is the distance from the variable node to its binder node in the path to the tree root
-    // (1 for the parent node, and so on)
-    depth: number
-    // Index of the variable name in the lambda-binder
-    index: number
+  toString() :string {
+    return '(' + this.depth + ',' + this.index + ')'
   }
-  arguments: AbsTermNode[]
 }
 
+type DeBruijnAST = Abs<DeBruijnPair>
 
 function findLastIndex<T>(a:T[], condition : (element:T, index:number) => boolean) : undefined | [number, T] {
   for (var i = a.length-1; i>=0; i--) {
@@ -143,43 +149,44 @@ function findLastIndex<T>(a:T[], condition : (element:T, index:number) => boolea
   return undefined
 }
 
-function lambdaTermToDeBruijn_Abs(
-    /// the node of the alternating AST to convert
-    t:Abs,
-    /// the list of binder nodes from the root
-    bindersFromRoot: Abs[],
-    /// map that assigns an index to every free variable seen so far
-    freeVariableIndex:identifier[]
-): AbsTermNode
+function toDeBruijnAST_Abs(
+  /// the node of the alternating AST to convert
+  t: Abs<identifier>,
+  /// the list of binder nodes from the root
+  bindersFromRoot: Abs<identifier>[],
+  /// map that assigns an index to every free variable seen so far
+  freeVariableIndex:identifier[]
+): DeBruijnAST
 {
   return {
-    label : "Abs",
-    boundVariables : t.abs,
-    body: lambdaTermToDeBruijn_Var_App(t.body, bindersFromRoot.concat([t]), freeVariableIndex)
+    kind: "Abs",
+    boundVariables: t.boundVariables,
+    body: toDeBruijnAST_Var_App(t.body, bindersFromRoot.concat([t]), freeVariableIndex)
   }
 }
 
-function lambdaTermToDeBruijn_Var_App(
+function toDeBruijnAST_Var_App(
   /// the node of the alternating AST to convert
-  t: Var | App,
+  t: Var<identifier> | App<identifier>,
   /// the list of binder nodes from the root
-  bindersFromRoot: Abs[],
+  bindersFromRoot: Abs<identifier>[],
   /// map that assigns an index to every free variable seen so far
   freeVariableIndex: identifier[]
-): AppTermNode | VarTermNode {
+): App<DeBruijnPair> | Var<DeBruijnPair> {
   switch (t.kind) {
   case "Var":
     let variableName = t.name
     /// find the variable binder
-    let binderLookup = findLastIndex(bindersFromRoot, b => b.abs.indexOf(variableName) >= 0)
+    let binderLookup = findLastIndex(bindersFromRoot, b => b.boundVariables.indexOf(variableName) >= 0)
 
-    var binder;
+    var binder = new DeBruijnPair()
     if (binderLookup !== undefined) {
       let [binderIndex, b] = binderLookup
-      let j = b.abs.indexOf(variableName)
+      let j = b.boundVariables.indexOf(variableName)
       let binderDistance = bindersFromRoot.length - binderIndex
-      binder = { depth: 2 * binderDistance - 1, index: j + 1 }
-      verbose && console.log('bindersFromRoot:' + bindersFromRoot.map(x => '[' + x.abs.join(' - ') + ']').join('\\') + ' varName:' + variableName + ' binderIndex:' + binderIndex + ' j:' + j + ' depth:' + binder.depth + ' binderVarNames:' + b.abs.join('-'))
+      binder.depth = 2 * binderDistance - 1
+      binder.index = j + 1
+      verbose && console.log('bindersFromRoot:' + bindersFromRoot.map(x => '[' + x.boundVariables.join(' - ') + ']').join('\\') + ' varName:' + variableName + ' binderIndex:' + binderIndex + ' j:' + j + ' depth:' + binder.depth + ' binderVarNames:' + b.boundVariables.join('-'))
     }
     // no binder -> x is a free variable and its enabler is the root
     else {
@@ -189,23 +196,25 @@ function lambdaTermToDeBruijn_Var_App(
         j = freeVariableIndex.push(variableName)
       }
       let root = bindersFromRoot[0]
-      binder = { depth: 2 * bindersFromRoot.length - 1, index: root.abs.length + j }
+      binder.depth = 2 * bindersFromRoot.length - 1
+      binder.index = root.boundVariables.length + j
     }
     return {
-      label: "Var",
-      binder: binder,
-      arguments: t.arguments.map(o => lambdaTermToDeBruijn_Abs(o, bindersFromRoot, freeVariableIndex))
+      kind: "Var",
+      name: binder,
+      arguments: t.arguments.map(o => toDeBruijnAST_Abs(o, bindersFromRoot, freeVariableIndex))
     }
   case "App":
     return {
-      label: "@",
-      operator: lambdaTermToDeBruijn_Abs(t.operator, bindersFromRoot, freeVariableIndex),
-      operands: t.operands.map(o => lambdaTermToDeBruijn_Abs(o, bindersFromRoot, freeVariableIndex))
+      kind: "App",
+      operator: toDeBruijnAST_Abs(t.operator, bindersFromRoot, freeVariableIndex),
+      operands: t.operands.map(o => toDeBruijnAST_Abs(o, bindersFromRoot, freeVariableIndex))
     }
   }
 }
 
-// var t = lambdaTermToDeBruijn(omega, omega, undefined, [], [])
+console.log('Test printing a lambda term from the deBruijn AST')
+console.log(printLambdaTerm(toDeBruijnAST_Abs(omega, [], [])).prettyPrint)
 
 ////////// Justified sequences
 
@@ -220,12 +229,12 @@ type Pointer =
 
 /// Ghosts variable node
 type GhostVarNode  = {
-  label: 'GhostVar'
+  kind: 'GhostVar'
 }
 
 /// Ghost abstraction node
 type GhostAbsNode = {
-  label: 'GhostAbs',
+  kind: 'GhostAbs',
   /// list of bound variable names: not used for traversal but needed: for core projection calculation
   boundVariables: identifier[]
 }
@@ -247,19 +256,19 @@ type GhostAbsOccurrence = {
 type GhostOccurrence = GhostVarOccurrence | GhostAbsOccurrence
 
 type AbsOccurrence = {
-  node: AbsTermNode
+  node: Abs<DeBruijnPair>
   /// Pointer to the justifying occurrence (of the parent-node)
   justifier: Pointer | "Initial"
 }
 
 type VarOccurrence = {
-  node: VarTermNode
+  node: Var<DeBruijnPair>
   /// Pointer to the justifying lambda-occurrence
   justifier: Pointer
 }
 
 type AppOccurrence = {
-  node: AppTermNode
+  node: App<DeBruijnPair>
 }
 
 type StructuralOccurrence = AbsOccurrence | VarOccurrence | AppOccurrence
@@ -272,7 +281,7 @@ enum Scope {
   External
 }
 
-type OccWithScope<T> = T & {
+type OccWithScope<N> = N & {
   /// Cache the scope of the underlying node (external or internal) in the occurrence itself
   /// (Recoverable from the hereditary justification).
   scope: Scope
@@ -281,11 +290,11 @@ type OccWithScope<T> = T & {
 /// An node occurrence in a justified sequence
 type Occurrence = OccWithScope<GhostOccurrence | StructuralOccurrence>
 
-function isAbstractionOccurrence(n: Occurrence): n is OccWithScope<AbsOccurrence | GhostAbsOccurrence> { return n.node.label == 'GhostAbs' || n.node.label == "Abs" }
-function isVariableOccurrence(n: Occurrence): n is OccWithScope<VarOccurrence | GhostVarOccurrence> { return n.node.label == 'GhostVar' || n.node.label == "Var" }
-function isApplicationOccurrence(n: Occurrence): n is OccWithScope<AppOccurrence> { return n.node.label == '@' }
+function isAbstractionOccurrence(n: Occurrence): n is OccWithScope<AbsOccurrence | GhostAbsOccurrence> { return n.node.kind == 'GhostAbs' || n.node.kind == "Abs" }
+function isVariableOccurrence(n: Occurrence): n is OccWithScope<VarOccurrence | GhostVarOccurrence> { return n.node.kind == 'GhostVar' || n.node.kind == "Var" }
+function isApplicationOccurrence(n: Occurrence): n is OccWithScope<AppOccurrence> { return n.node.kind == 'App' }
 
-function isGhostOccurrence(t: Occurrence): t is OccWithScope<GhostOccurrence> { return t.node.label == 'GhostVar' || t.node.label == 'GhostAbs' }
+function isGhostOccurrence(t: Occurrence): t is OccWithScope<GhostOccurrence> { return t.node.kind == 'GhostVar' || t.node.kind == 'GhostAbs' }
 function isStructuralOccurrence(t: Occurrence): t is OccWithScope<StructuralOccurrence> { return !isGhostOccurrence(t) }
 
 let isInternal = (o: Occurrence) => o.scope == Scope.Internal
@@ -353,11 +362,11 @@ function distanceToJustifier (t:JustSeq, enablerDepth:number) {
 
 /// Arity of a node occurrence
 function arity(o: GhostOccurrence | StructuralOccurrence) : number {
-  switch (o.node.label) {
+  switch (o.node.kind) {
     case "GhostAbs":
     case "GhostVar":
       return 0
-    case "@":
+    case "App":
       return o.node.operands.length
     case "Var":
       return o.node.arguments.length
@@ -398,20 +407,21 @@ function isNondeterministic(e: Extension): e is (OccWithScope<AbsOccurrence|Ghos
 function isMaximal(e: Extension): e is void { return !isDeterministic(e) && !isNondeterministic(e) }
 
 /// childIndex ranges from
-///   1 to artiy(x) for a variable-node
-///   0 to artiy(x) for an @-node
-function childOf(o: (GhostVarOccurrence | VarOccurrence | AppOccurrence), childIndex: number): AbsTermNode | GhostAbsNode {
-  switch (o.node.label) {
+///   1 to arity(x) for a variable-node
+///   0 to arity(x) for an @-node
+function childOf(o: (GhostVarOccurrence | VarOccurrence | AppOccurrence), childIndex: number): Abs<DeBruijnPair> | GhostAbsNode {
+  switch (o.node.kind) {
   case "GhostVar":
-     return { label: "GhostAbs", boundVariables: [] }
+    return { kind: "GhostAbs", boundVariables: [] }
   case "Var":
     return childIndex <= arity(o)
       ? o.node.arguments[childIndex-1]
-      : { label: "GhostAbs", boundVariables: [] }
-  case "@":
-    return childIndex <= arity(o)
-      ? o.node.operands[childIndex-1]
-      : { label: "GhostAbs", boundVariables: [] }
+      : { kind: "GhostAbs", boundVariables: [] }
+  case "App":
+    return (childIndex == 0) ? o.node.operator :
+      childIndex <= arity(o)
+        ? o.node.operands[childIndex-1]
+        : { kind: "GhostAbs", boundVariables: [] }
   }
 }
 
@@ -431,7 +441,7 @@ function createOccurrenceOfChildOf(
     justifier: { distance: distance, label: childIndex },
     scope: m.scope
   }
-  if (child.label == "Abs") {
+  if (child.kind == "Abs") {
     return o as OccWithScope<AbsOccurrence>
   } else {//if (child.label == "GhostAbs") {
     (o as OccWithScope<GhostAbsOccurrence>).node.boundVariables = []
@@ -439,17 +449,16 @@ function createOccurrenceOfChildOf(
   }
 }
 
-/// extend a traversal
-function extendTraversal(treeRoot: AbsTermNode, t: JustSeq): Extension
+/// Extend a traversal using the traversal rules of the 'normalizing traversals' from the paper
+function extendTraversal(treeRoot: DeBruijnAST, t: JustSeq): Extension
 {
   let nextIndex = t.length
   let lastIndex = t.length-1
   let lastOccurrence = t[lastIndex]
 
   if (lastOccurrence === undefined) { /// Empty sequence?
-    let r = treeRoot as AbsTermNode
     return {
-      node: r,
+      node: treeRoot,
       justifier: "Initial",
       scope: Scope.External
     }
@@ -482,20 +491,20 @@ function extendTraversal(treeRoot: AbsTermNode, t: JustSeq): Extension
   } else if (isAbstractionOccurrence(lastOccurrence)) {
     if(isStructuralOccurrence(lastOccurrence)) {
       let bodyNode = lastOccurrence.node.body
-      if (bodyNode.label == "@") {
+      if (bodyNode.kind == "App") {
         return {
           node: bodyNode, // traverse the body of the lambda
           justifier: "Initial",
           scope: Scope.Internal
         }
       } else {
-        let d = distanceToJustifier(t, bodyNode.binder.depth)
+        let d = distanceToJustifier(t, bodyNode.name.depth)
         let m = t[nextIndex -d] // if d= 1 then the justifier is the last occurrence
         return {
           node: bodyNode, // traverse the body of the lambda
           justifier: {
             distance: d,
-            label: bodyNode.binder.index
+            label: bodyNode.name.index
           },
           scope: m.scope
         }
@@ -508,7 +517,7 @@ function extendTraversal(treeRoot: AbsTermNode, t: JustSeq): Extension
       let i = lastOccurrence.justifier.label
       verbose && console.log('m:' + arity(m) + ', mu:' + arity(mu) + ', i:' + i)
       return {
-        node: { label : "GhostVar"},
+        node: { kind : "GhostVar"},
         justifier : { distance: justifierDistance,
                       label: arity(mu) + i - arity(m) },
         scope : mu.scope
@@ -531,7 +540,7 @@ function printOccurrence(t: JustSeq, o: Occurrence, index: number, freeVariableI
         //let varName = o.justifier.label > j.boundVariables.length
           //? "#"
           //: j.boundVariables[o.justifier.label-1]
-      let j = t[index - o.justifier.distance].node as AbsTermNode
+      let j = t[index - o.justifier.distance].node as Abs<DeBruijnPair>
       let name =
         (o.justifier.label <= j.boundVariables.length)
         ? j.boundVariables[o.justifier.label - 1]
@@ -596,7 +605,7 @@ function* coreProjection(t: JustSeq) {
   }
 }
 
-function enumerateAllTraversals(treeRoot: AbsTermNode, t: JustSeq, freeVariableIndex: identifier[]) {
+function enumerateAllTraversals(treeRoot: DeBruijnAST, t: JustSeq, freeVariableIndex: identifier[]) {
   while(true) {
     var next = extendTraversal(treeRoot, t)
     if (isMaximal(next)) {
@@ -626,16 +635,17 @@ function enumerateAllTraversals(treeRoot: AbsTermNode, t: JustSeq, freeVariableI
 function evaluate(term: AltLambda) {
   console.log('Traversing ' + printLambdaTerm(term).prettyPrint)
   var freeVariableIndex: identifier[] = []
-  var treeRoot = lambdaTermToDeBruijn_Abs(term, [], freeVariableIndex)
+  var treeRoot = toDeBruijnAST_Abs(term, [], freeVariableIndex)
 
   enumerateAllTraversals(treeRoot, [], freeVariableIndex)
 }
 
 evaluate(neil)
 
+/// WIP
 /// Traverse a traversal until the next strand
 /// Return false if the input traversal is maximal
-function traverseNextStrand(treeRoot: AbsTermNode, t: JustSeq, freeVariableIndex: identifier[]) {
+function traverseNextStrand(treeRoot: DeBruijnAST, t: JustSeq, freeVariableIndex: identifier[]) {
   var next = extendTraversal(treeRoot, t)
   while (isDeterministic(next)) {
     t.push(next) // append the traversed occurrence
@@ -645,12 +655,11 @@ function traverseNextStrand(treeRoot: AbsTermNode, t: JustSeq, freeVariableIndex
   return !isMaximal(next)
 }
 
-
-/// read-out
+/// Evaluate and readout the normal-form
 function evaluateAndReadout(term:AltLambda) {
   console.log('Traversing ' + printLambdaTerm(term).prettyPrint)
   var freeVariableIndex :identifier[] = []
-  var treeRoot = lambdaTermToDeBruijn_Abs(term, [], freeVariableIndex)
+  var treeRoot = toDeBruijnAST_Abs(term, [], freeVariableIndex)
 
   var t: JustSeq = []
 
