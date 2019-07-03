@@ -57,7 +57,7 @@ function isSingletonAST<T>(t: T | LambdaAST<T> | LambdaAST<T>[]): t is LambdaAST
   return (t as LambdaAST<T>).kind !== undefined
 }
 function isLambdaASTArray<T>(t: LambdaAST<T> | LambdaAST<T>[] | T): t is T {
-  return (t as LambdaAST<T>[]).map !== undefined // this feels like a hack, cannot find a better way to do this than ducktype checking...
+  return (t as LambdaAST<T>[]).map !== undefined // this feels like a hack, cannot find a better way to do this than duck-type checking...
 }
 function isOfVariableNameType<T>(t: LambdaAST<T> | LambdaAST<T>[] | T): t is T {
   return !isSingletonAST(t) && !isLambdaASTArray(t)
@@ -449,6 +449,22 @@ function createOccurrenceOfChildOf(
   }
 }
 
+/// Return the list of possible occurrences opening up a new strand
+/// in a strand-complete traversal
+/// Returns void if the traversal is maximal
+function newStrandOpeningOccurrences(t: JustSeq, lastOccurrence:OccWithScope<GhostVarOccurrence|VarOccurrence>)
+  : void | OccWithScope<GhostAbsOccurrence | AbsOccurrence>[] {
+  let da = dynamicArity(t)
+  if (da === 0) {
+    return /// maximal traversal
+  } else {
+    var possibleChildren =
+      Array.apply(null, Array(da))
+        .map((_, i) => createOccurrenceOfChildOf(lastOccurrence, i + 1, 1))
+    return possibleChildren
+  }
+}
+
 /// Extend a traversal using the traversal rules of the 'normalizing traversals' from the paper
 function extendTraversal(treeRoot: DeBruijnAST, t: JustSeq): Extension
 {
@@ -477,16 +493,7 @@ function extendTraversal(treeRoot: DeBruijnAST, t: JustSeq): Extension
       let m = t[nextIndex - distance] as OccWithScope<VarOccurrence | GhostVarOccurrence | AppOccurrence>
       return createOccurrenceOfChildOf(m, lastOccurrence.justifier.label, distance)
     } else { /// external variable
-      let da = dynamicArity(t)
-      if(da === 0) {
-        return /// maximal traversal
-      } else {
-        let o = lastOccurrence
-        var possibleChildren =
-          Array.apply(null, Array(da))
-               .map((_,i) => createOccurrenceOfChildOf(o, i + 1, 1))
-        return possibleChildren
-      }
+      return newStrandOpeningOccurrences(t, lastOccurrence)
     }
   } else if (isAbstractionOccurrence(lastOccurrence)) {
     if(isStructuralOccurrence(lastOccurrence)) {
@@ -661,29 +668,46 @@ function evaluateAndReadout(term:AltLambda) {
   var freeVariableIndex :identifier[] = []
   var treeRoot = toDeBruijnAST_Abs(term, [], freeVariableIndex)
 
-  var t: JustSeq = []
+  function readout(t: JustSeq): Abs<DeBruijnPair> {
 
-  var more :boolean = true
-  while(more) {
-    more = traverseNextStrand(treeRoot, t, freeVariableIndex)
-    if (more) {
-      verbose && console.log("end of strand: external variable reached" + printSequence(t, freeVariableIndex))
-      //
-    } else {
+    traverseNextStrand(treeRoot, t, freeVariableIndex)
+
+    // get the last two nodes from the core projection
+    var p = coreProjection(t)
+    let strandEndVar = p.next().value as OccWithScope<VarOccurrence | GhostVarOccurrence>
+    let strandBeginAbs = p.next().value as OccWithScope<AbsOccurrence | GhostAbsOccurrence>
+
+    let argumentOccurrences: void | OccWithScope<AbsOccurrence | GhostAbsOccurrence>[] = newStrandOpeningOccurrences(t, strandEndVar)
+    var a: Abs<DeBruijnPair>[];
+
+    if (isMaximal(argumentOccurrences)) {
       verbose && console.log("Maximal traversal reached:" + printSequence(t, freeVariableIndex))
-      let strandEndVar = coreProjection(t).next().value as OccWithScope<VarOccurrence | GhostVarOccurrence>
-      let strandBeginAbs = coreProjection(t).next().value as OccWithScope<AbsOccurrence | GhostAbsOccurrence>
-
-      // let x: Var = {
-      //   kind: "Var",
-      //   name: strandEndVar.,
-      //   arguments:
-      // }
-      ///
+      a = []
+    } else {
+      verbose && console.log("end of strand: external variable reached" + printSequence(t, freeVariableIndex))
+      a = argumentOccurrences.map(o => readout(t.concat(o)))
+    }
+    var binder = new DeBruijnPair()
+    // the projection gives the pat to the root therefore the
+    // depth of the variable is precisely the distance to the justifying node in the core projection
+    binder.depth = strandEndVar.justifier.distance
+    binder.index = strandEndVar.justifier.label
+    return {
+      kind: "Abs",
+      boundVariables: strandBeginAbs.node.boundVariables,
+      body:
+        {
+          kind: "Var",
+          name: binder,
+          arguments: a
+        }
     }
   }
+
+  return readout([])
 }
 
+console.log(printLambdaTerm(evaluateAndReadout(neil)).prettyPrint)
 
 ////// Tests cases:
 //
