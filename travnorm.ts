@@ -521,12 +521,22 @@ function printPointer(j:Pointer|"Initial") {
   return (j == "Initial") ? '' : '('+j.distance+','+j.label+')'
 }
 
-function printOccurrence(o:Occurrence) : string {
+function printOccurrence(t: JustSeq, o: Occurrence, index: number, freeVariableIndex: identifier[]) : string {
   if(isStructuralOccurrence(o)){
     if(isAbstractionOccurrence(o)) {
       return '[' + o.node.boundVariables.join(' ') + ']' + printPointer(o.justifier)
     } else if (isVariableOccurrence(o)) {
-      return printPointer(o.justifier)
+      // retrieve the variable name from the binder
+        //var j = t[index - o.justifier.distance].node as AbsTermNode | GhostAbsNode
+        //let varName = o.justifier.label > j.boundVariables.length
+          //? "#"
+          //: j.boundVariables[o.justifier.label-1]
+      let j = t[index - o.justifier.distance].node as AbsTermNode
+      let name =
+        (o.justifier.label <= j.boundVariables.length)
+        ? j.boundVariables[o.justifier.label - 1]
+          : freeVariableIndex[o.justifier.label - 1 - j.boundVariables.length]
+      return name + printPointer(o.justifier)
     } else { //if (isApplicationOccurrence(o)) {
       return '@'
     }
@@ -539,8 +549,8 @@ function printOccurrence(o:Occurrence) : string {
   }
 }
 
-function printSequence(t:JustSeq) {
-  return t.map(printOccurrence).join('--')
+function printSequence(t: JustSeq, freeVariableIndex:identifier[]) {
+  return t.map((o, i) => printOccurrence(t, o, i, freeVariableIndex)).join('--')
 }
 
 /// Pop multiple elements from an array
@@ -586,26 +596,26 @@ function* coreProjection(t: JustSeq) {
   }
 }
 
-function enumerateAllTraversals(treeRoot: AbsTermNode, t: JustSeq) {
+function enumerateAllTraversals(treeRoot: AbsTermNode, t: JustSeq, freeVariableIndex: identifier[]) {
   while(true) {
     var next = extendTraversal(treeRoot, t)
     if (isMaximal(next)) {
-      console.log("Maximal traversal reached:" + printSequence(t))
+      console.log("Maximal traversal reached:" + printSequence(t, freeVariableIndex))
       let p = Array.from(coreProjection(t))
       p.reverse()
-      console.log("               projection:" + printSequence(p))
+      console.log("               projection:" + printSequence(p, freeVariableIndex))
       return t
     } else if(isDeterministic(next)) {
       t.push(next) // append the traversed occurrence
-      verbose && console.log("extended:" + printSequence(t))
+      verbose && console.log("extended:" + printSequence(t, freeVariableIndex))
     } else {
       /// external variable with multiple non-deterministic choices
-      verbose && console.log("External variable reached with " + next.length + " branch(es):" + printSequence(t))
+      verbose && console.log("External variable reached with " + next.length + " branch(es):" + printSequence(t, freeVariableIndex))
       for(let o of next) {
-        verbose && console.log("non-det-before:" + printSequence(t))
+        verbose && console.log("non-det-before:" + printSequence(t, freeVariableIndex))
         let t2 :JustSeq = t.concat(o)
-        verbose && console.log("chose " + (printPointer(o.justifier) + ":" + printSequence(t2)))
-        enumerateAllTraversals(treeRoot, t2)
+        verbose && console.log("chose " + (printPointer(o.justifier) + ":" + printSequence(t2, freeVariableIndex)))
+        enumerateAllTraversals(treeRoot, t2, freeVariableIndex)
       }
       return
     }
@@ -615,23 +625,61 @@ function enumerateAllTraversals(treeRoot: AbsTermNode, t: JustSeq) {
 /// Evaluate the term with term tree root treeRoot
 function evaluate(term: AltLambda) {
   console.log('Traversing ' + printLambdaTerm(term).prettyPrint)
+  var freeVariableIndex: identifier[] = []
+  var treeRoot = lambdaTermToDeBruijn_Abs(term, [], freeVariableIndex)
 
-  var treeRoot = lambdaTermToDeBruijn_Abs(term, [], [])
-  enumerateAllTraversals(treeRoot, [])
+  enumerateAllTraversals(treeRoot, [], freeVariableIndex)
 }
 
 evaluate(neil)
+
+/// Traverse a traversal until the next strand
+/// Return false if the input traversal is maximal
+function traverseNextStrand(treeRoot: AbsTermNode, t: JustSeq, freeVariableIndex: identifier[]) {
+  var next = extendTraversal(treeRoot, t)
+  while (isDeterministic(next)) {
+    t.push(next) // append the traversed occurrence
+    verbose && console.log("extended:" + printSequence(t, freeVariableIndex))
+    next = extendTraversal(treeRoot, t)
+  }
+  return !isMaximal(next)
+}
+
+
 /// read-out
+function evaluateAndReadout(term:AltLambda) {
+  console.log('Traversing ' + printLambdaTerm(term).prettyPrint)
+  var freeVariableIndex :identifier[] = []
+  var treeRoot = lambdaTermToDeBruijn_Abs(term, [], freeVariableIndex)
+
+  var t: JustSeq = []
+
+  var more :boolean = true
+  while(more) {
+    more = traverseNextStrand(treeRoot, t, freeVariableIndex)
+    if (more) {
+      verbose && console.log("end of strand: external variable reached" + printSequence(t, freeVariableIndex))
+      //
+    } else {
+      verbose && console.log("Maximal traversal reached:" + printSequence(t, freeVariableIndex))
+      let strandEndVar = coreProjection(t).next().value as OccWithScope<VarOccurrence | GhostVarOccurrence>
+      let strandBeginAbs = coreProjection(t).next().value as OccWithScope<AbsOccurrence | GhostAbsOccurrence>
+
+      // let x: Var = {
+      //   kind: "Var",
+      //   name: strandEndVar.,
+      //   arguments:
+      // }
+      ///
+    }
+  }
+}
 
 
 ////// Tests cases:
 //
 // Traversing (lambda u.u (x u))(lambda v.v y)
-// travnorm.ts:622
-// Maximal traversal reached:[]--@--[u](1,0)--(1,1)--[v](3,1)--(1,1)--[](3,1)--(7,1)--[](1,1)--(7,1)--[v](9,1)--(1,1)--$[](3,1)--#(5,1)--$[](1,1)--#(3,1)--[](5,1)--(17,2)
-// travnorm.ts:598
-//                projection:[]--(1,1)--[v](1,1)--#(1,1)--$[](1,1)--(5,2)
-// travnorm.ts:601
-// Maximal traversal reached:[]--@--[u](1,0)--(1,1)--[v](3,1)--(1,1)--[](3,1)--(7,1)--$[](1,2)--#(3,1)--[](5,1)--(11,2)
-// travnorm.ts:598
-//                projection:[]--(1,1)--$[](1,2)--(3,2)
+// Maximal traversal reached:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--[](1,1)--u(7,1)--[v](9,1)--v(1,1)--$[](3,1)--#(5,1)--$[](1,1)--#(3,1)--[](5,1)--y(17,2)
+//                projection:[]--x(1,1)--[v](1,1)--#(1,1)--$[](1,1)--y(5,2)
+// Maximal traversal reached:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--$[](1,2)--#(3,1)--[](5,1)--y(11,2)
+//                projection:[]--x(1,1)--$[](1,2)--y(3,2)
