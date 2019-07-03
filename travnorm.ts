@@ -1,4 +1,10 @@
+/// if true then print additional logging
 let verbose = false
+/// If true then print out the deBruijn pairs even for non-ghost variables when reading-out sequences
+let printDeBruijnPairs = false
+
+/// Variable names
+type identifier = string
 
 ////////////// Lambda term with alternating AST
 /// The type T represents the type used to label variable nodes
@@ -9,8 +15,12 @@ type Abs<T> = { kind: "Abs", boundVariables: identifier[], body: App<T> | Var<T>
 
 type LambdaAST<T> = Var<T> | App<T> | Abs<T>
 
-interface Printable {
-  toString(): string
+/// To support pretty-printing, the type T must implement name lookup
+interface NameLookup<T> {
+  // Given a list of binders occurring in the path from the root
+  // to the variable node,
+  // return the name of the variable
+  lookup(bindersFromRoot: Abs<T>[], freeVariableIndices:identifier[]): string
 }
 
 /// Pretty-printing helper type
@@ -24,21 +34,34 @@ function bracketize(t: Pretty): string {
   return t.mustBracketIfArgument ? '(' + t.prettyPrint + ')' : t.prettyPrint
 }
 
-function printLambdaTerm<T extends Printable>(t: LambdaAST<T>): Pretty {
-  switch(t.kind) {
-  case "Var":
-    return  {
-      prettyPrint: '' + (t.name.toString()) + (t.arguments.length == 0 ? '' : ' ' + t.arguments.map(x => bracketize(printLambdaTerm<T>(x))).concat()),
-      mustBracketIfArgument: t.arguments.length > 0
-    }
-  case "App":
-    return {
-      prettyPrint: bracketize(printLambdaTerm<T>(t.operator)) + t.operands.map(x => bracketize(printLambdaTerm<T>(x))).concat(),
-      mustBracketIfArgument: true
-    }
-  case "Abs":
-    let bodyPrint = printLambdaTerm<T>(t.body)
-    return (t.boundVariables.length == 0)
+function printLambdaTerm<T extends NameLookup<T>>(
+  r: Abs<T>,
+  // optional array use to assing indices to free variables (used with the deBruijn encoding)
+  freeVariableIndices:identifier[] = []
+): Pretty {
+
+  function printSubterm(
+    t: LambdaAST<T>,
+    bindersFromRoot: Abs<T>[]
+  ): Pretty {
+    switch(t.kind) {
+    case "Var":
+      return  {
+        prettyPrint: (t.name.lookup(bindersFromRoot, freeVariableIndices))
+                     + (t.arguments.length == 0
+                        ? ''
+                        : ' ' + t.arguments.map(x => bracketize(printSubterm(x, bindersFromRoot))).join(' ')),
+        mustBracketIfArgument: t.arguments.length > 0
+      }
+    case "App":
+      return {
+        prettyPrint: bracketize(printSubterm(t.operator, bindersFromRoot))
+                    + t.operands.map(x => bracketize(printSubterm(x, bindersFromRoot))).join(' '),
+        mustBracketIfArgument: true
+      }
+    case "Abs":
+      let bodyPrint = printSubterm(t.body, bindersFromRoot.concat(t))
+      return (t.boundVariables.length == 0)
           ? {
               prettyPrint: bodyPrint.prettyPrint,
               mustBracketIfArgument: bodyPrint.mustBracketIfArgument
@@ -47,11 +70,12 @@ function printLambdaTerm<T extends Printable>(t: LambdaAST<T>): Pretty {
               prettyPrint: '\lambda ' + t.boundVariables.join(' ') + '.' + bodyPrint.prettyPrint,
               mustBracketIfArgument: true
           }
+    }
   }
+  return printSubterm(r, [])
 }
 
 /////// Parsing combinators to easily define lambda-terms with AST of type Abs<identifier>
-
 
 function isSingletonAST<T>(t: T | LambdaAST<T> | LambdaAST<T>[]): t is LambdaAST<T> {
   return (t as LambdaAST<T>).kind !== undefined
@@ -98,8 +122,15 @@ function app<T> (operator: Abs<T> | T, operands: Abs<T> | Abs<T>[] | T): Abs<T> 
 
 ////////////////// Alternating-AST with variable named with string identifiers.
 
-/// Variable names
-type identifier = string
+// An implementation of variable labels where the variable
+// name is specified by its identifier in every node of the tree
+declare interface String {
+  lookup(bindersFromRoot: Abs<identifier>[], freeVariableIndices: identifier[]): string
+}
+
+String.prototype.lookup = function (bindersFromRoot: Abs<string>[], freeVariableIndices: identifier[]) {
+  return this.toString()
+}
 
 /// Alternating-AST with variable named with string identifiers
 /// The alternating-AST of a lambda term always starts with a lambda node
@@ -122,25 +153,8 @@ console.log(printLambdaTerm(omega).prettyPrint)
 console.log(printLambdaTerm(neil).prettyPrint)
 //////////
 
-/// A deBruijn-like encoding  where the name of a variable occurrence
-/// is defined by a pair of integers referencing to the lambda-binder
-/// and the index of the name in the lambda-binder
-class DeBruijnPair implements Printable {
-  // Depth is the distance from the variable node to its binder node in the path to the tree root
-  // (1 for the parent node, and so on)
-  depth: number = 0
-  // Index of the variable name in the lambda-binder
-  index: number = 0
-
-  toString() :string {
-    return '(' + this.depth + ',' + this.index + ')'
-  }
-}
-
-type DeBruijnAST = Abs<DeBruijnPair>
-
-function findLastIndex<T>(a:T[], condition : (element:T, index:number) => boolean) : undefined | [number, T] {
-  for (var i = a.length-1; i>=0; i--) {
+function findLastIndex<T>(a: T[], condition: (element: T, index: number) => boolean): undefined | [number, T] {
+  for (var i = a.length - 1; i >= 0; i--) {
     let e = a[i]
     if (condition(e, i)) {
       return [i, e]
@@ -148,6 +162,37 @@ function findLastIndex<T>(a:T[], condition : (element:T, index:number) => boolea
   }
   return undefined
 }
+
+/// A deBruijn-like encoding where the name of a variable occurrence
+/// is defined by a pair of integers referencing to the lambda-binder
+/// and the index of the name in the lambda-binder
+class DeBruijnPair implements NameLookup<DeBruijnPair> {
+  // Depth is the distance from the variable node to its binder node in the path to the tree root
+  // (1 for the parent node, and so on)
+  depth: number = 0
+  // Index of the variable name in the lambda-binder
+  index: number = 0
+
+  lookup(bindersFromRoot: Abs<DeBruijnPair>[], freeVariableIndices: identifier[]): string {
+    let binderIndex = bindersFromRoot.length - (this.depth + 1) / 2
+    let binder = bindersFromRoot[binderIndex]
+    let root = bindersFromRoot[0]
+    let isBoundByRoot = binderIndex == 0
+
+    let deBruijnPair = '(' + this.depth + ',' + this.index + ')'
+
+    let freeVariableIndex = this.index-root.boundVariables.length-1
+    if(isBoundByRoot && freeVariableIndex >= 0) {
+      return freeVariableIndices[freeVariableIndex] + (printDeBruijnPairs ? deBruijnPair : '')
+    } else {
+      return this.index > binder.boundVariables.length
+        ? '#' + deBruijnPair // unresolved ghost variable name (should never happen on core-projected traversals)
+        : binder.boundVariables[this.index - 1] + (printDeBruijnPairs ? deBruijnPair : '')
+    }
+  }
+}
+
+type DeBruijnAST = Abs<DeBruijnPair>
 
 function toDeBruijnAST_Abs(
   /// the node of the alternating AST to convert
@@ -171,7 +216,7 @@ function toDeBruijnAST_Var_App(
   /// the list of binder nodes from the root
   bindersFromRoot: Abs<identifier>[],
   /// map that assigns an index to every free variable seen so far
-  freeVariableIndex: identifier[]
+  freeVariableIndices: identifier[]
 ): App<DeBruijnPair> | Var<DeBruijnPair> {
   switch (t.kind) {
   case "Var":
@@ -191,9 +236,9 @@ function toDeBruijnAST_Var_App(
     // no binder -> x is a free variable and its enabler is the root
     else {
       // lookup the variable index
-      let j = freeVariableIndex.indexOf(variableName)
+      let j = freeVariableIndices.indexOf(variableName)
       if (j < 0) {
-        j = freeVariableIndex.push(variableName)
+        j = freeVariableIndices.push(variableName)
       }
       let root = bindersFromRoot[0]
       binder.depth = 2 * bindersFromRoot.length - 1
@@ -202,13 +247,13 @@ function toDeBruijnAST_Var_App(
     return {
       kind: "Var",
       name: binder,
-      arguments: t.arguments.map(o => toDeBruijnAST_Abs(o, bindersFromRoot, freeVariableIndex))
+      arguments: t.arguments.map(o => toDeBruijnAST_Abs(o, bindersFromRoot, freeVariableIndices))
     }
   case "App":
     return {
       kind: "App",
-      operator: toDeBruijnAST_Abs(t.operator, bindersFromRoot, freeVariableIndex),
-      operands: t.operands.map(o => toDeBruijnAST_Abs(o, bindersFromRoot, freeVariableIndex))
+      operator: toDeBruijnAST_Abs(t.operator, bindersFromRoot, freeVariableIndices),
+      operands: t.operands.map(o => toDeBruijnAST_Abs(o, bindersFromRoot, freeVariableIndices))
     }
   }
 }
@@ -452,20 +497,20 @@ function createOccurrenceOfChildOf(
 /// Return the list of possible occurrences opening up a new strand
 /// in a strand-complete traversal
 /// Returns void if the traversal is maximal
-function newStrandOpeningOccurrences(t: JustSeq, lastOccurrence:OccWithScope<GhostVarOccurrence|VarOccurrence>)
-  : void | OccWithScope<GhostAbsOccurrence | AbsOccurrence>[] {
+function newStrandOpeningOccurrences(
+    t: JustSeq,
+    lastOccurrence:OccWithScope<GhostVarOccurrence|VarOccurrence>
+) : OccWithScope<GhostAbsOccurrence | AbsOccurrence>[] {
   let da = dynamicArity(t)
-  if (da === 0) {
-    return /// maximal traversal
-  } else {
-    var possibleChildren =
+  var possibleChildren =
       Array.apply(null, Array(da))
         .map((_, i) => createOccurrenceOfChildOf(lastOccurrence, i + 1, 1))
-    return possibleChildren
-  }
+  return possibleChildren
 }
 
 /// Extend a traversal using the traversal rules of the 'normalizing traversals' from the paper
+/// The input traversal is not modified, instead it returns the list of possibles node occurrences
+/// to traverse, or just void if the traversal is maximal
 function extendTraversal(treeRoot: DeBruijnAST, t: JustSeq): Extension
 {
   let nextIndex = t.length
@@ -493,7 +538,12 @@ function extendTraversal(treeRoot: DeBruijnAST, t: JustSeq): Extension
       let m = t[nextIndex - distance] as OccWithScope<VarOccurrence | GhostVarOccurrence | AppOccurrence>
       return createOccurrenceOfChildOf(m, lastOccurrence.justifier.label, distance)
     } else { /// external variable
-      return newStrandOpeningOccurrences(t, lastOccurrence)
+      let possibleExtensions = newStrandOpeningOccurrences(t, lastOccurrence)
+      if (possibleExtensions.length == 0) {
+        return // maximal traversal: return void
+      } else {
+        return possibleExtensions
+      }
     }
   } else if (isAbstractionOccurrence(lastOccurrence)) {
     if(isStructuralOccurrence(lastOccurrence)) {
@@ -649,7 +699,6 @@ function evaluate(term: AltLambda) {
 
 evaluate(neil)
 
-/// WIP
 /// Traverse a traversal until the next strand
 /// Return false if the input traversal is maximal
 function traverseNextStrand(treeRoot: DeBruijnAST, t: JustSeq, freeVariableIndex: identifier[]) {
@@ -663,30 +712,30 @@ function traverseNextStrand(treeRoot: DeBruijnAST, t: JustSeq, freeVariableIndex
 }
 
 /// Evaluate and readout the normal-form
-function evaluateAndReadout(term:AltLambda) {
-  console.log('Traversing ' + printLambdaTerm(term).prettyPrint)
-  var freeVariableIndex :identifier[] = []
-  var treeRoot = toDeBruijnAST_Abs(term, [], freeVariableIndex)
+/// TODO: handle alpha-conversion to avoid variable name collision when removing the debrujin pairs
+function evaluateAndReadout(term:AltLambda)
+  : [Abs<DeBruijnPair>, identifier[]]
+{
+  console.log('Evaluating ' + printLambdaTerm(term).prettyPrint)
+  var freeVariableIndices :identifier[] = []
+  var treeRoot = toDeBruijnAST_Abs(term, [], freeVariableIndices)
 
   function readout(t: JustSeq): Abs<DeBruijnPair> {
 
-    traverseNextStrand(treeRoot, t, freeVariableIndex)
+    traverseNextStrand(treeRoot, t, freeVariableIndices)
 
     // get the last two nodes from the core projection
     var p = coreProjection(t)
     let strandEndVar = p.next().value as OccWithScope<VarOccurrence | GhostVarOccurrence>
     let strandBeginAbs = p.next().value as OccWithScope<AbsOccurrence | GhostAbsOccurrence>
 
-    let argumentOccurrences: void | OccWithScope<AbsOccurrence | GhostAbsOccurrence>[] = newStrandOpeningOccurrences(t, strandEndVar)
-    var a: Abs<DeBruijnPair>[];
-
-    if (isMaximal(argumentOccurrences)) {
-      verbose && console.log("Maximal traversal reached:" + printSequence(t, freeVariableIndex))
-      a = []
+    let argumentOccurrences = newStrandOpeningOccurrences(t, strandEndVar)
+    if (argumentOccurrences.length == 0) {
+      verbose && console.log("maximal traversal reached:" + printSequence(t, freeVariableIndices))
     } else {
-      verbose && console.log("end of strand: external variable reached" + printSequence(t, freeVariableIndex))
-      a = argumentOccurrences.map(o => readout(t.concat(o)))
+      verbose && console.log("end of strand: external variable reached" + printSequence(t, freeVariableIndices))
     }
+
     var binder = new DeBruijnPair()
     // the projection gives the pat to the root therefore the
     // depth of the variable is precisely the distance to the justifying node in the core projection
@@ -699,20 +748,27 @@ function evaluateAndReadout(term:AltLambda) {
         {
           kind: "Var",
           name: binder,
-          arguments: a
+          arguments: argumentOccurrences.map(o => readout(t.concat(o)))
         }
     }
   }
 
-  return readout([])
+  return [readout([]), freeVariableIndices]
 }
 
-console.log(printLambdaTerm(evaluateAndReadout(neil)).prettyPrint)
+let [readout, freeVariableIndices] = evaluateAndReadout(neil)
+console.log(printLambdaTerm(readout, freeVariableIndices).prettyPrint)
 
 ////// Tests cases:
 //
+// lambda x.x
+// (lambda x.x x)(lambda x.x x)
+// (lambda u.u (x u))(lambda v.v y)
+// Test printing a lambda term from the deBruijn AST
+// (lambda x.[object Object](1,1) [object Object](3,1))(lambda x.[object Object](1,1) [object Object](3,1))
 // Traversing (lambda u.u (x u))(lambda v.v y)
 // Maximal traversal reached:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--[](1,1)--u(7,1)--[v](9,1)--v(1,1)--$[](3,1)--#(5,1)--$[](1,1)--#(3,1)--[](5,1)--y(17,2)
 //                projection:[]--x(1,1)--[v](1,1)--#(1,1)--$[](1,1)--y(5,2)
 // Maximal traversal reached:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--$[](1,2)--#(3,1)--[](5,1)--y(11,2)
 //                projection:[]--x(1,1)--$[](1,2)--y(3,2)
+// Evaluating (lambda u.u (x u))(lambda v.v y)
