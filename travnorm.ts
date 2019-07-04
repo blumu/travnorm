@@ -80,7 +80,7 @@ function printLambdaTerm<T extends NameLookup<T>>(
 function isSingletonAST<T>(t: T | LambdaAST<T> | LambdaAST<T>[]): t is LambdaAST<T> {
   return (t as LambdaAST<T>).kind !== undefined
 }
-function isLambdaASTArray<T>(t: LambdaAST<T> | LambdaAST<T>[] | T): t is T {
+function isLambdaASTArray<T>(t: LambdaAST<T> | LambdaAST<T>[] | T): t is LambdaAST<T>[] {
   return (t as LambdaAST<T>[]).map !== undefined // this feels like a hack, cannot find a better way to do this than duck-type checking...
 }
 function isOfVariableNameType<T>(t: LambdaAST<T> | LambdaAST<T>[] | T): t is T {
@@ -95,7 +95,7 @@ function abs<T> (variables: identifier[], body: LambdaAST<T> | T): Abs<T> {
     : { kind: "Abs", boundVariables: variables, body: applicationBody }
 }
 
-function app<T> (operator: Abs<T> | T, operands: Abs<T> | Abs<T>[] | T): Abs<T> {
+function app<T> (operator: Abs<T> | T, operands: Abs<T> | Abs<T>[] | T = []): Abs<T> {
   let unappliedVar = (name: T): Abs<T> => { return { kind: "Abs", boundVariables: [], body: { kind: "Var", name: name, arguments: [] } } }
 
   let isDummy = (t: Abs<T>): boolean => t.boundVariables.length == 0
@@ -144,13 +144,24 @@ let delta: AltLambda = abs(['x'], app('x', 'x'))
 var omega: AltLambda = app(delta, delta)
 
 /// Neil Jones's example: J = (\u.u(x u))(\v.v y)
-let neil: AltLambda =
+let neil =
   app(abs(['u'], app('u', app('x', 'u'))),
     abs(['v'], app('v', 'y')))
+
+let varity =
+  abs(['t'], app('t', [abs(['n', 'a', 'x'], app('n', abs(['s','z'], app('a', [ app('s'), app('x', [app('s'), app('z')])])))),
+                      abs(['a'], 'a'),
+                      abs(['z0'], 'z0')
+                    ] ))
+
+let two = abs(['s2', 'z2'], app('s2', app('s2', 'z2')))
+
+let varityTwo = app(varity, two)
 
 console.log(printLambdaTerm(identity).prettyPrint)
 console.log(printLambdaTerm(omega).prettyPrint)
 console.log(printLambdaTerm(neil).prettyPrint)
+console.log(printLambdaTerm(varityTwo).prettyPrint)
 //////////
 
 function findLastIndex<T>(a: T[], condition: (element: T, index: number) => boolean): undefined | [number, T] {
@@ -619,12 +630,6 @@ function printSequence(t: JustSeq, freeVariableIndex:identifier[]) {
   return t.map((o, i) => printOccurrence(t, o, i, freeVariableIndex)).join('--')
 }
 
-/// Pop multiple elements from an array
-function pops<T>(a:T[], k:number) {
-  for (let i = 1; i <= k; i++)
-    a.pop()
-}
-
 /// core projection
 function* coreProjection(t: JustSeq) {
   var pendingLambdas: identifier[] = []
@@ -638,7 +643,7 @@ function* coreProjection(t: JustSeq) {
          yield cloneOccurrence
          pendingLambdas = []
        } else {
-         pendingLambdas = pendingLambdas.concat(o.node.boundVariables)
+         pendingLambdas = o.node.boundVariables.concat(pendingLambdas)
        }
     } else if (isVariableOccurrence(o)) {
        if (isExternal(o)) {
@@ -654,10 +659,10 @@ function* coreProjection(t: JustSeq) {
          yield cloneOccurrence
          pendingLambdas = []
        } else {
-         pops(pendingLambdas, arity(o))
+         pendingLambdas.splice(0, arity(o)) // pop arity(o) elements from the left of the array
        }
     } else if(isApplicationOccurrence(o)){
-       pops(pendingLambdas, arity(o))
+      pendingLambdas.splice(0, arity(o)) // pop arity(o) elements from the left of the array
     }
   }
 }
@@ -756,19 +761,35 @@ function evaluateAndReadout(term:AltLambda)
   return [readout([]), freeVariableIndices]
 }
 
-let [readout, freeVariableIndices] = evaluateAndReadout(neil)
-console.log(printLambdaTerm(readout, freeVariableIndices).prettyPrint)
+function evaluateAndPrintNormalForm(term: AltLambda) {
+  let [readout, freeVariableIndices] = evaluateAndReadout(term)
+  console.log(printLambdaTerm(readout, freeVariableIndices).prettyPrint)
+}
+
+evaluateAndPrintNormalForm(neil)
+
+evaluateAndPrintNormalForm(varityTwo)
+
+/// Don't do this!
+// evaluateAndPrintNormalForm(omega)
 
 ////// Tests cases:
 //
 // lambda x.x
 // (lambda x.x x)(lambda x.x x)
 // (lambda u.u (x u))(lambda v.v y)
+
 // Test printing a lambda term from the deBruijn AST
-// (lambda x.[object Object](1,1) [object Object](3,1))(lambda x.[object Object](1,1) [object Object](3,1))
+// (lambda x.x x)(lambda x.x x)
+
 // Traversing (lambda u.u (x u))(lambda v.v y)
 // Maximal traversal reached:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--[](1,1)--u(7,1)--[v](9,1)--v(1,1)--$[](3,1)--#(5,1)--$[](1,1)--#(3,1)--[](5,1)--y(17,2)
 //                projection:[]--x(1,1)--[v](1,1)--#(1,1)--$[](1,1)--y(5,2)
 // Maximal traversal reached:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--$[](1,2)--#(3,1)--[](5,1)--y(11,2)
 //                projection:[]--x(1,1)--$[](1,2)--y(3,2)
-// Evaluating (lambda u.u (x u))(lambda v.v y)
+
+// Evaluating (lambda u.u (x u))(lambda v.v y)x (lambda v.v y) y
+// x(lambda v.v y) y
+
+// Evaluating (lambda t.t (lambda n a x.n (lambda s z.a s (x s z))) (lambda a.a) (lambda z0.z0))(lambda s2 z2.s2 (s2 z2))
+// lambda x x s z.s (x s (x s z))
