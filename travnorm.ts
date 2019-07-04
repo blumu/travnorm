@@ -257,64 +257,61 @@ class DeBruijnPair implements NameLookup<DeBruijnPair> {
   }
 }
 
+/// Convert an AST of type Abs<identifier> to an AST of type Abs<DeBruijnPair>
 function toDeBruijnAST(
   /// the node of the alternating AST to convert
-  t: Abs<identifier>,
+  node: Abs<identifier>,
   /// the list of binder nodes from the root
   bindersFromRoot: Abs<identifier>[],
   /// map that assigns an index to every free variable seen so far
   freeVariableIndices:identifier[]
 ): Abs<DeBruijnPair>
 {
+  var newBindersFromRoot = bindersFromRoot.concat([node])
+  let VarOrApp_Node = () : Var<DeBruijnPair> | App<DeBruijnPair> =>
+    {
+      let bodyNode = node.body
+      switch (bodyNode.kind) {
+      case "Var":
+        let variableName = bodyNode.name
+        /// find the variable binder
+        let binderLookup = findLastIndex(newBindersFromRoot, b => b.boundVariables.indexOf(variableName) >= 0)
+
+        var binder = new DeBruijnPair()
+        if (binderLookup !== undefined) {
+          let [binderIndex, b] = binderLookup
+          let binderDistance = newBindersFromRoot.length - binderIndex
+          binder.depth = 2 * binderDistance - 1
+          binder.index = b.boundVariables.indexOf(variableName) + 1
+          verbose && console.log('bindersFromRoot:' + newBindersFromRoot.map(x => '[' + x.boundVariables.join(' - ') + ']').join('\\') + ' varName:' + variableName + ' binderIndex:' + binderIndex + ' depth:' + binder.depth + ' binderVarNames:' + b.boundVariables.join('-'))
+        }
+        // no binder -> x is a free variable and its enabler is the root
+        else {
+          let j = lookupOrCreateFreeVariableIndex(freeVariableIndices, variableName)
+          let root = newBindersFromRoot[0]
+          binder.depth = 2 * newBindersFromRoot.length - 1
+          binder.index = root.boundVariables.length + j
+        }
+        return {
+          kind: "Var",
+          name: binder,
+          arguments: bodyNode.arguments.map(o => toDeBruijnAST(o, newBindersFromRoot, freeVariableIndices))
+        }
+      case "App":
+        return {
+          kind: "App",
+          operator: toDeBruijnAST(bodyNode.operator, newBindersFromRoot, freeVariableIndices),
+          operands: bodyNode.operands.map(o => toDeBruijnAST(o, newBindersFromRoot, freeVariableIndices))
+        }
+      }
+    }
   return {
     kind: "Abs",
-    boundVariables: t.boundVariables,
-    body: toDeBruijnAST_Var_App(t.body, bindersFromRoot.concat([t]), freeVariableIndices)
+    boundVariables: node.boundVariables,
+    body: VarOrApp_Node()
   }
 }
 
-function toDeBruijnAST_Var_App(
-  /// the node of the alternating AST to convert
-  t: Var<identifier> | App<identifier>,
-  /// the list of binder nodes from the root
-  bindersFromRoot: Abs<identifier>[],
-  /// map that assigns an index to every free variable seen so far
-  freeVariableIndices: identifier[]
-): App<DeBruijnPair> | Var<DeBruijnPair> {
-  switch (t.kind) {
-  case "Var":
-    let variableName = t.name
-    /// find the variable binder
-    let binderLookup = findLastIndex(bindersFromRoot, b => b.boundVariables.indexOf(variableName) >= 0)
-
-    var binder = new DeBruijnPair()
-    if (binderLookup !== undefined) {
-      let [binderIndex, b] = binderLookup
-      let binderDistance = bindersFromRoot.length - binderIndex
-      binder.depth = 2 * binderDistance - 1
-      binder.index = b.boundVariables.indexOf(variableName) + 1
-      verbose && console.log('bindersFromRoot:' + bindersFromRoot.map(x => '[' + x.boundVariables.join(' - ') + ']').join('\\') + ' varName:' + variableName + ' binderIndex:' + binderIndex + ' depth:' + binder.depth + ' binderVarNames:' + b.boundVariables.join('-'))
-    }
-    // no binder -> x is a free variable and its enabler is the root
-    else {
-      let j = lookupOrCreateFreeVariableIndex(freeVariableIndices, variableName)
-      let root = bindersFromRoot[0]
-      binder.depth = 2 * bindersFromRoot.length - 1
-      binder.index = root.boundVariables.length + j
-    }
-    return {
-      kind: "Var",
-      name: binder,
-      arguments: t.arguments.map(o => toDeBruijnAST(o, bindersFromRoot, freeVariableIndices))
-    }
-  case "App":
-    return {
-      kind: "App",
-      operator: toDeBruijnAST(t.operator, bindersFromRoot, freeVariableIndices),
-      operands: t.operands.map(o => toDeBruijnAST(o, bindersFromRoot, freeVariableIndices))
-    }
-  }
-}
 
 console.log('Test printing a lambda term from the deBruijn AST')
 let d = printLambdaTerm(toDeBruijnAST(omega, [], [])).prettyPrint
