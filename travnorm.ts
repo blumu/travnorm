@@ -1,7 +1,7 @@
 /// if true then print additional logging
 let verbose = false
 /// If true then print out the deBruijn pairs even for non-ghost variables when reading-out sequences
-let printDeBruijnPairs = false
+let printDeBruijnPairs = true
 
 /// Variable names
 type identifier = string
@@ -189,6 +189,11 @@ class DeBruijnPair implements NameLookup {
   // Index of the variable name in the lambda-binder
   index: number = 0
 
+  constructor(depth:number, index:number) {
+    this.depth = depth
+    this.index = index
+  }
+
   /// Lookup name of a bound variable.
   /// If the variable is bound, return the binder and the name of the variable ([Abs<DeBruijnPair>, identifier])
   /// If it's a free variable, return the name of the free variable (identifier)
@@ -242,20 +247,18 @@ function toDeBruijnAST(
         /// find the variable binder
         let binderLookup = findLastIndex(newBindersFromRoot, b => b.boundVariables.indexOf(variableName) >= 0)
 
-        var binder = new DeBruijnPair()
+        var binder : DeBruijnPair
         if (binderLookup !== undefined) {
           let [binderIndex, b] = binderLookup
           let binderDistance = newBindersFromRoot.length - binderIndex
-          binder.depth = 2 * binderDistance - 1
-          binder.index = b.boundVariables.indexOf(variableName) + 1
+          binder = new DeBruijnPair(2 * binderDistance - 1, b.boundVariables.indexOf(variableName) + 1)
           verbose && console.log('bindersFromRoot:' + newBindersFromRoot.map(x => '[' + x.boundVariables.join(' - ') + ']').join('\\') + ' varName:' + variableName + ' binderIndex:' + binderIndex + ' depth:' + binder.depth + ' binderVarNames:' + b.boundVariables.join('-'))
         }
         // no binder -> x is a free variable and its enabler is the root
         else {
           let j = lookupOrCreateFreeVariableIndex(freeVariableIndices, variableName)
           let root = newBindersFromRoot[0]
-          binder.depth = 2 * newBindersFromRoot.length - 1
-          binder.index = root.boundVariables.length + j
+          binder = new DeBruijnPair(2 * newBindersFromRoot.length - 1, root.boundVariables.length + j)
         }
         return {
           kind: "Var",
@@ -279,8 +282,10 @@ function toDeBruijnAST(
 
 
 console.log('Test printing a lambda term from the deBruijn AST')
+printDeBruijnPairs = false
 let d = printLambdaTerm(toDeBruijnAST(omega, [], [])).prettyPrint
 let d2 = printLambdaTerm(omega).prettyPrint
+printDeBruijnPairs = true
 console.log(d)
 console.log(d2)
 if(d !== d2 ) {
@@ -778,13 +783,10 @@ function traverseNextStrand<T extends LocateBinder>(treeRoot: Abs<T>, t: JustSeq
   return next.length>0
 }
 
-/// Evaluate and readout the normal-form
-/// The readout produced is an AST with DeBruijn variable references (rather than identifiers).
-///
-/// TODO: handle alpha-conversion to avoid variable name collision when removing the deBruijn pairs!
-/// (This would not be a problem if we were just assigning fresh variable names, but here
-///  we want to implement the name-preserving read-out algorithm from the paper, that preserves original
-/// variable name when possible)
+/// Evaluate and readout the **name-free** normal-form.
+/// This 'read-out' implementation produces an AST with DeBruijn variable references (rather than identifiers).
+/// Variable name collision can occur if pretty-printing the term by just looking up variable name
+/// without displaying the associated deBruijn pairs.
 function evaluateAndReadout<T extends LocateBinder>(
   root:Abs<T>,
   freeVariableIndices: identifier[] = []
@@ -792,12 +794,17 @@ function evaluateAndReadout<T extends LocateBinder>(
 {
   console.log('Evaluating ' + printLambdaTerm(root, freeVariableIndices).prettyPrint)
 
-  function readout(t: JustSeq<T>): Abs<DeBruijnPair> {
+  /// Read out the subterm at ending at the last node of traversal t
+  function readout(
+      // A strand-complete traversal
+      t: JustSeq<T>): Abs<DeBruijnPair> {
     traverseNextStrand<T>(root, t, freeVariableIndices)
 
     // get the last two nodes from the core projection
     var p = coreProjection(t)
+    // The strand ends with an external variable, call it x
     let strandEndVar = p.next().value as OccWithScope<VarOccurrence<T> | GhostVarOccurrence>
+     // The strand starts with an external lambda, call it \lambda y1 .... y_n
     let strandBeginAbs = p.next().value as OccWithScope<AbsOccurrence<T> | GhostAbsOccurrence>
 
     let argumentOccurrences = newStrandOpeningOccurrences(t, strandEndVar)
@@ -807,18 +814,15 @@ function evaluateAndReadout<T extends LocateBinder>(
       verbose && console.log("end of strand: external variable reached" + printSequence(t, freeVariableIndices))
     }
 
-    var binder = new DeBruijnPair()
-    // the core projection gives the path to the root therefore the
-    // depth of the variable is precisely the distance to the justifying node in the core projection
-    binder.depth = strandEndVar.justifier.distance
-    binder.index = strandEndVar.justifier.label
     return {
       kind: "Abs",
       boundVariables: strandBeginAbs.node.boundVariables,
       body:
         {
           kind: "Var",
-          name: binder,
+          // Since the core projection of the traversal is the path to the root (see paper),
+          // the depth of the variable is precisely the distance to the justifying node in the core projection.
+          name: new DeBruijnPair(strandEndVar.justifier.distance, strandEndVar.justifier.label),
           arguments: argumentOccurrences.map(o => readout(t.concat(o)))
         }
     }
@@ -856,6 +860,144 @@ test(varityTwo)
 
 /// Don't do this!
 // evaluateAndPrintNormalForm(omega)
+
+/// Create a new variable with specified prefix
+/// that is fresh for the specified list of existing variable names
+function freshVariableWithPrefix(prefix:string, isNameClashing:(name:identifier) => boolean)
+{
+  let candidate = prefix
+  let attempts = 1
+  while (isNameClashing(candidate)) {
+    candidate = prefix + attempts
+    attempts++
+  }
+  return candidate
+}
+
+///////// Name resolution with anti-collision
+
+/// Name-preserving conversion of a deBruijn-based AST into an identifier-based AST.
+///
+/// Attempt to resolve the naming suggestions assigned by the lambda nodes labels
+/// when possible. If causing conflicts, the suggested names might be replaced by
+/// fresh names.
+///
+/// This function implements the *name-preserving* read-out algorithm from the paper,
+/// that preserves original variable name when possible.
+function resolveNameAmbiguity (
+  binderNode:Abs<DeBruijnPair>,
+  freeVariableIndices:identifier[],
+  // The list of binders from the root to the last node of t
+  // this array gets mutated as bound variable names get renamed to avoid name collision
+  // when replacing DeBruijn pairs by variable names.
+  bindersFromRoot: (Abs<DeBruijnPair>| GhostAbsNode)[] //= []
+  ) :Abs<identifier>
+{
+  let getBindingIndex = (node: Abs<DeBruijnPair> | GhostAbsNode, variableName: identifier) => node.boundVariables.indexOf(variableName)
+  let isBoundByAbsNode = (node: Abs<DeBruijnPair> | GhostAbsNode, variableName: identifier) => getBindingIndex(node, variableName) >= 0
+
+  function nameAlreadyUsedAbove (suggestedName:identifier, binderNameIndex:number) {
+    let freeVariableWithSameName = freeVariableIndices.indexOf(suggestedName)>=0
+
+    let upperBinderNodesLookup = bindersFromRoot.findIndex(binder=> isBoundByAbsNode(binder, suggestedName))
+    let nameUsedInStrictUpperBinderNodes = upperBinderNodesLookup >= 0 && upperBinderNodesLookup < bindersFromRoot.length-1
+
+    let sameBinderNodeLookup = binderNode.boundVariables.indexOf(suggestedName)
+    let nameUsedInSameBinderNode = sameBinderNodeLookup >= 0 && sameBinderNodeLookup < binderNameIndex
+
+    return freeVariableWithSameName || nameUsedInStrictUpperBinderNodes || nameUsedInSameBinderNode
+  }
+
+  /// Assign permanent bound variable name to the lambda node, one at a time
+  bindersFromRoot.push(binderNode)
+  for(let b = 0; b<binderNode.boundVariables.length; b++) {
+    let suggestedName = binderNode.boundVariables[b]
+    let potentialConflict = nameAlreadyUsedAbove(suggestedName, b)
+    if(potentialConflict) {
+      // Is there an actual conflict? I.e. is there a variable occurring below
+      // the current node in the term tree, whose deBruijn index refers to an upper binding
+      // with the same name?
+      function hasNamingConflict(
+        node:App<DeBruijnPair>|Var<DeBruijnPair>|Abs<DeBruijnPair>,
+        depthNotToCross:number
+      ) : boolean {
+        if(node.kind == "Abs") {
+          return hasNamingConflict(node.body, depthNotToCross+1)
+        } else if(node.kind == "App") {
+          return hasNamingConflict(node.operator, depthNotToCross+1)
+          || node.operands.findIndex(o=>hasNamingConflict(o, depthNotToCross+1)) >= 0
+        } else { //if (node.kind == "Var")
+          // +1 because variable name in lambda-binders start at index 1
+          let currentIndexInCurrentBinderNode = b + 1
+          let overArcingBinding =
+            node.name.depth > depthNotToCross
+            || (node.name.depth == depthNotToCross
+                && node.name.index<currentIndexInCurrentBinderNode)
+
+          if(overArcingBinding) {
+            // We found a variable node with over-arcing binding (i.e. binding lambda occurring above binder 'b')
+            // we now lookup it's assigned name to check if there is a name conflict
+            let adjustedDeBruijn = new DeBruijnPair(node.name.depth - depthNotToCross + 1, node.name.index)
+            let overArcingVariableAssignedName = adjustedDeBruijn.lookupBinderAndName(bindersFromRoot, freeVariableIndices).name
+
+            return (suggestedName == overArcingVariableAssignedName)
+                    || node.arguments.findIndex(o=>hasNamingConflict(o, depthNotToCross+1)) >= 0
+          } else {
+            return node.arguments.findIndex(o=>hasNamingConflict(o, depthNotToCross+1)) >= 0
+          }
+        }
+      }
+      if(hasNamingConflict(binderNode.body, 1)) {
+        // resolve the conflict by renaming the bound lambda
+        let primedVariableName = binderNode.boundVariables[b]+'\''
+        binderNode.boundVariables[b] = freshVariableWithPrefix(primedVariableName, suggestion => nameAlreadyUsedAbove(suggestion, b))
+      } else {
+        // no  conflict with this suggested name: we make it the permanent name.
+      }
+    } else {
+      // no potential conflict with this suggested name: we make it the permanent name.
+    }
+  }
+
+  let bodyWithVariableNamesAssigned : App<identifier> | Var<identifier>
+  if(binderNode.body.kind == "App") {
+    bodyWithVariableNamesAssigned = {
+        kind: "App",
+        operator: resolveNameAmbiguity(binderNode.body.operator, freeVariableIndices, bindersFromRoot),
+        operands: binderNode.body.operands.map(a => resolveNameAmbiguity(a, freeVariableIndices, bindersFromRoot))
+    }
+  } else { // if(root.body.kind == "Var") {
+    let assignedVariableName = binderNode.body.name.lookupBinderAndName(bindersFromRoot, freeVariableIndices).name
+    bodyWithVariableNamesAssigned = {
+      kind: "Var",
+      name: assignedVariableName,
+      arguments: binderNode.body.arguments.map(a => resolveNameAmbiguity(a, freeVariableIndices, bindersFromRoot))
+    }
+  }
+  bindersFromRoot.pop()
+  return {
+    kind: "Abs",
+    boundVariables: binderNode.boundVariables,
+    body:bodyWithVariableNamesAssigned
+  }
+}
+
+function evaluateResolveAndPrintNormalForm(term: Abs<identifier>) {
+  let [readout, freeVariableIndices] = evaluateAndReadout(term)
+  let resolvedNameReadout = resolveNameAmbiguity(readout, freeVariableIndices, [])
+  console.log(printLambdaTerm(resolvedNameReadout, freeVariableIndices).prettyPrint)
+}
+
+evaluateResolveAndPrintNormalForm(neil)
+
+evaluateResolveAndPrintNormalForm(varityTwo)
+
+
+/// NOTES and REMARKS:
+///
+/// - IDEA: pointer is not needed for free variable occurrences!
+///   Pointer to the tree node suffice! Could simplify traversal
+///   implementation even further by introducing a new type FreeVarOccurrence<T> with no pointer
 
 ////// Tests cases:
 //
