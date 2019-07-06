@@ -16,12 +16,12 @@ type Abs<T> = { kind: "Abs", boundVariables: identifier[], body: App<T> | Var<T>
 type LambdaAST<T> = Var<T> | App<T> | Abs<T>
 
 /// To support pretty-printing, the type T must implement name lookup
-interface NameLookup<T> {
+interface NameLookup {
   // Given a list of binders occurring in the path from the root
   // to the variable node, return the name of the variable
   // If the type T encodes free variables with indices, then the map
   // 'freeVariableIndices' can be used to lookup free variable names for free variable indices
-  lookup(bindersFromRoot: Abs<T>[],
+  lookup<T>(bindersFromRoot: Abs<T>[],
         freeVariableIndices:identifier[] // readonly
         ): string
 }
@@ -37,7 +37,7 @@ function bracketize(t: Pretty): string {
   return t.mustBracketIfArgument ? '(' + t.prettyPrint + ')' : t.prettyPrint
 }
 
-function printLambdaTerm<T extends NameLookup<T>>(
+function printLambdaTerm<T extends NameLookup>(
   r: Abs<T>,
   // optional array use to assign indices to free variables (used with the deBruijn encoding)
   freeVariableIndices:identifier[] = []
@@ -129,10 +129,10 @@ function app<T> (operator: Abs<T> | T, operands: Abs<T> | Abs<T>[] | T = []): Ab
 // name is specified in every node of the tree
 // by the name identifier itself
 declare interface String {
-  lookup(bindersFromRoot: Abs<identifier>[], freeVariableIndices: identifier[]): string
+  lookup<T>(bindersFromRoot: Abs<T>[], freeVariableIndices: identifier[]): string
 }
 
-String.prototype.lookup = function (bindersFromRoot: Abs<string>[], freeVariableIndices: identifier[]) {
+String.prototype.lookup = function<T> (bindersFromRoot: Abs<T>[], freeVariableIndices: identifier[]) {
   // The name of the variable occurrence is just name identifier itself!
   return this.toString()
 }
@@ -182,30 +182,44 @@ function findLastIndex<T>(a: T[], condition: (element: T, index: number) => bool
 /// A deBruijn-like encoding where the name of a variable occurrence
 /// is defined by a pair of integers referencing to the lambda-binder
 /// and the index of the name in the lambda-binder
-class DeBruijnPair implements NameLookup<DeBruijnPair> {
+class DeBruijnPair implements NameLookup {
   // Depth is the distance from the variable node to its binder node in the path to the tree root
   // (1 for the parent node, and so on)
   depth: number = 0
   // Index of the variable name in the lambda-binder
   index: number = 0
 
-  lookup(bindersFromRoot: Abs<DeBruijnPair>[], freeVariableIndices: identifier[]): string {
+  /// Lookup name of a bound variable.
+  /// If the variable is bound, return the binder and the name of the variable ([Abs<DeBruijnPair>, identifier])
+  /// If it's a free variable, return the name of the free variable (identifier)
+  lookupBinderAndName<T>(
+    bindersFromRoot: (Abs<T>|GhostAbsNode)[],
+    freeVariableIndices: identifier[]
+  ): { binder: Abs<T> | GhostAbsNode | undefined, name: identifier }
+    {
     let binderIndex = bindersFromRoot.length - (this.depth + 1) / 2
     let binder = bindersFromRoot[binderIndex]
     let root = bindersFromRoot[0]
     let isBoundByRoot = binderIndex == 0
-
-    let deBruijnPair = '(' + this.depth + ',' + this.index + ')'
-
-    let freeVariableIndex = this.index-root.boundVariables.length-1
-    if(isBoundByRoot && freeVariableIndex >= 0) {
-      return freeVariableIndices[freeVariableIndex] + (printDeBruijnPairs ? deBruijnPair : '')
+    let freeVariableIndex = this.index - root.boundVariables.length - 1
+    if (isBoundByRoot && freeVariableIndex >= 0) {
+      return { binder: undefined, name: freeVariableIndices[freeVariableIndex] }
     } else {
-      return this.index > binder.boundVariables.length
-        ? '#' + deBruijnPair // unresolved ghost variable name (should never happen on core-projected traversals)
-        : binder.boundVariables[this.index - 1] + (printDeBruijnPairs ? deBruijnPair : '')
+      let resolvedName =
+        this.index > binder.boundVariables.length
+        ?
+        // unresolved ghost variable name (should never happen on core-projected traversals)
+         '#(' + this.depth + ',' + this.index + ')'
+        : binder.boundVariables[this.index - 1]
+      return { binder: binder, name: resolvedName }
     }
   }
+
+  lookup<T>(bindersFromRoot: Abs<T>[], freeVariableIndices: identifier[]): string {
+    let binderAndName = this.lookupBinderAndName(bindersFromRoot, freeVariableIndices)
+    return binderAndName.name + (printDeBruijnPairs ? '(' + this.depth + ',' + this.index + ')' : '')
+  }
+
 }
 
 /// Convert an AST of type Abs<identifier> to an AST of type Abs<DeBruijnPair>
@@ -497,14 +511,14 @@ function newStrandOpeningOccurrences<T>(
 
 /// To support traversals, the type T to encode variable labels
 // must support the LocateBinder interface
-interface LocateBinder<T> extends NameLookup<T> {
+interface LocateBinder extends NameLookup {
   /// Locate the binder occurrence from the P-view
   /// at an occurrence of a variable node with label encoded by type T
   /// The P-view (which represents the path from the variable node to the tree root, see paper)
   //  is provided as an iterable that enumerates backwards
   /// the occurrence in the P-view.
   /// The function must return a justification pointer to the occurrence of the binder
-  findBinder(
+  findBinder<T>(
     pview: IterableIterator<[Occurrence<T>, number]>,
     freeVariableIndices: identifier[]): Pointer
 }
@@ -512,16 +526,16 @@ interface LocateBinder<T> extends NameLookup<T> {
 // Implement interface LocateBinder for AST where the variable labels
 // are encoded as simple name identifiers (string)
 declare interface String {
-  findBinder(
-    pview: IterableIterator<[Occurrence<identifier>, number]>,
+  findBinder<T>(
+    pview: IterableIterator<[Occurrence<T>, number]>,
     freeVariableIndices: identifier[]): Pointer
 }
 /// When using name identifier, the binder is the first lambda node
 /// in the P-view binding that particular variable name.
 /// If no such occurrence exists then it's a free variable
 /// (justified by the tree root--the initial node occurrence in the P-view)
-String.prototype.findBinder = function (
-  pview: IterableIterator<[Occurrence<identifier>, number]>,
+String.prototype.findBinder = function<T> (
+  pview: IterableIterator<[Occurrence<T>, number]>,
   freeVariableIndices: identifier[]
 ) {
   let variableName = this.toString()
@@ -543,8 +557,8 @@ String.prototype.findBinder = function (
 }
 
 declare interface DeBruijnPair {
-  findBinder(
-    pview: IterableIterator<[Occurrence<DeBruijnPair>, number]>,
+  findBinder<T>(
+    pview: IterableIterator<[Occurrence<T>, number]>,
     freeVariableIndices: identifier[]): Pointer
 }
 /// When encoding variable labels as DeBruijnPair, the
@@ -552,8 +566,8 @@ declare interface DeBruijnPair {
 /// and stopping after 'depth' number of occurrences, where
 /// 'depth' is the deBruijn static depth (i.e. the number of nodes separating
 /// the variable from its 'enabler' in the tree)
-DeBruijnPair.prototype.findBinder = function(
-  pview: IterableIterator<[Occurrence<DeBruijnPair>, number]>,
+DeBruijnPair.prototype.findBinder = function<T>(
+  pview: IterableIterator<[Occurrence<T>, number]>,
   freeVariableIndices: identifier[]
 ) {
   let enablerDepth: number = this.depth
@@ -577,7 +591,7 @@ function isDeterministic<T>(e: Extension<T>): e is Occurrence<T> {
 /// Extend a traversal using the traversal rules of the 'normalizing traversals' from the paper
 /// The input traversal is not modified, instead it returns the list of possibles node occurrences
 /// to traverse, or just void if the traversal is maximal
-function extendTraversal<T extends LocateBinder<T>>(
+function extendTraversal<T extends LocateBinder>(
   treeRoot: Abs<T>, t: JustSeq<T>,
   freeVariableIndices: identifier[]
 ): Extension<T>
@@ -716,7 +730,7 @@ function* coreProjection<T>(t: JustSeq<T>) {
   }
 }
 
-function enumerateAllTraversals<T extends LocateBinder<T>>(treeRoot: Abs<T>, t: JustSeq<T>, freeVariableIndices: identifier[]) {
+function enumerateAllTraversals<T extends LocateBinder>(treeRoot: Abs<T>, t: JustSeq<T>, freeVariableIndices: identifier[]) {
   while(true) {
     var next = extendTraversal(treeRoot, t, freeVariableIndices)
     if(isDeterministic(next)) {
@@ -743,7 +757,7 @@ function enumerateAllTraversals<T extends LocateBinder<T>>(treeRoot: Abs<T>, t: 
 }
 
 /// Evaluate the term with term tree root treeRoot
-function evaluate<T extends LocateBinder<T>>(term: Abs<T>) {
+function evaluate<T extends LocateBinder>(term: Abs<T>) {
   console.log('Traversing ' + printLambdaTerm(term).prettyPrint)
   var freeVariableIndex: identifier[] = []
 
@@ -754,7 +768,7 @@ evaluate(neil)
 
 /// Traverse a traversal until the next strand
 /// Return false if the input traversal is maximal
-function traverseNextStrand<T extends LocateBinder<T>>(treeRoot: Abs<T>, t: JustSeq<T>, freeVariableIndices: identifier[]) {
+function traverseNextStrand<T extends LocateBinder>(treeRoot: Abs<T>, t: JustSeq<T>, freeVariableIndices: identifier[]) {
   var next = extendTraversal(treeRoot, t, freeVariableIndices)
   while (isDeterministic(next)) {
     t.push(next) // append the traversed occurrence
@@ -771,7 +785,7 @@ function traverseNextStrand<T extends LocateBinder<T>>(treeRoot: Abs<T>, t: Just
 /// (This would not be a problem if we were just assigning fresh variable names, but here
 ///  we want to implement the name-preserving read-out algorithm from the paper, that preserves original
 /// variable name when possible)
-function evaluateAndReadout<T extends LocateBinder<T>>(
+function evaluateAndReadout<T extends LocateBinder>(
   root:Abs<T>,
   freeVariableIndices: identifier[] = []
 ) : [Abs<DeBruijnPair>, identifier[]]
