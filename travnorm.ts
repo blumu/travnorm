@@ -1,298 +1,22 @@
+/// <reference path="parsing.ts" />
+/// <reference path="deBruijnAst.ts" />
+
 /// if true then print additional logging
 let verbose = false
-/// If true then print out the deBruijn pairs even for non-ghost variables when reading-out sequences
-let printDeBruijnPairs = true
-
-/// Variable names
-type identifier = string
-
-////////////// Lambda term with alternating AST
-/// The type T represents the type used to label variable nodes
-/// It can be for instance just 'string' or a deBruijn index
-type Var<T> = { kind: "Var", name: T, arguments: Abs<T>[] }
-type App<T> = { kind: "App", operator: Abs<T>, operands: Abs<T>[] }
-type Abs<T> = { kind: "Abs", boundVariables: identifier[], body: App<T> | Var<T> }
-
-type LambdaAST<T> = Var<T> | App<T> | Abs<T>
-
-/// To support pretty-printing, the type T must implement name lookup
-interface NameLookup {
-  // Given a list of binders occurring in the path from the root
-  // to the variable node, return the name of the variable
-  // If the type T encodes free variables with indices, then the map
-  // 'freeVariableIndices' can be used to lookup free variable names for free variable indices
-  lookup<T>(bindersFromRoot: Abs<T>[],
-        freeVariableIndices:identifier[] // readonly
-        ): string
-}
-
-/// Pretty-printing helper type
-type Pretty =
-  {
-    prettyPrint: string
-    mustBracketIfArgument: boolean
-  }
-
-function bracketize(t: Pretty): string {
-  return t.mustBracketIfArgument ? '(' + t.prettyPrint + ')' : t.prettyPrint
-}
-
-function printLambdaTerm<T extends NameLookup>(
-  r: Abs<T>,
-  // optional array use to assign indices to free variables (used with the deBruijn encoding)
-  freeVariableIndices:identifier[] = []
-): Pretty {
-
-  function printSubterm(
-    t: LambdaAST<T>,
-    bindersFromRoot: Abs<T>[]
-  ): Pretty {
-    switch(t.kind) {
-    case "Var":
-      return  {
-        prettyPrint: (t.name.lookup(bindersFromRoot, freeVariableIndices))
-                     + (t.arguments.length == 0
-                        ? ''
-                        : ' ' + t.arguments.map(x => bracketize(printSubterm(x, bindersFromRoot))).join(' ')),
-        mustBracketIfArgument: t.arguments.length > 0
-      }
-    case "App":
-      return {
-        prettyPrint: bracketize(printSubterm(t.operator, bindersFromRoot))
-                    + t.operands.map(x => bracketize(printSubterm(x, bindersFromRoot))).join(' '),
-        mustBracketIfArgument: true
-      }
-    case "Abs":
-      let bodyPrint = printSubterm(t.body, bindersFromRoot.concat(t))
-      return (t.boundVariables.length == 0)
-          ? {
-              prettyPrint: bodyPrint.prettyPrint,
-              mustBracketIfArgument: bodyPrint.mustBracketIfArgument
-          }
-          : {
-              prettyPrint: '\lambda ' + t.boundVariables.join(' ') + '.' + bodyPrint.prettyPrint,
-              mustBracketIfArgument: true
-          }
-    }
-  }
-  return printSubterm(r, [])
-}
-
-/////// Parsing combinators to easily define lambda-terms with AST of type Abs<identifier>
-
-function isSingletonAST<T>(t: T | LambdaAST<T> | LambdaAST<T>[]): t is LambdaAST<T> {
-  return (t as LambdaAST<T>).kind !== undefined
-}
-function isLambdaASTArray<T>(t: LambdaAST<T> | LambdaAST<T>[] | T): t is LambdaAST<T>[] {
-  return (t as LambdaAST<T>[]).map !== undefined // this feels like a hack, cannot find a better way to do this than duck-type checking...
-}
-function isOfVariableNameType<T>(t: LambdaAST<T> | LambdaAST<T>[] | T): t is T {
-  return !isSingletonAST(t) && !isLambdaASTArray(t)
-}
-
-function abs<T> (variables: identifier[], body: LambdaAST<T> | T): Abs<T> {
-  let applicationBody: LambdaAST<T> = isOfVariableNameType(body) ? { kind: "Var", name: body, arguments: [] } : body
-
-  return applicationBody.kind == "Abs"
-    ? { kind: "Abs", boundVariables: variables.concat(applicationBody.boundVariables), body: applicationBody.body }
-    : { kind: "Abs", boundVariables: variables, body: applicationBody }
-}
-
-function app<T> (operator: Abs<T> | T, operands: Abs<T> | Abs<T>[] | T = []): Abs<T> {
-  let unappliedVar = (name: T): Abs<T> => { return { kind: "Abs", boundVariables: [], body: { kind: "Var", name: name, arguments: [] } } }
-
-  let isDummy = (t: Abs<T>): boolean => t.boundVariables.length == 0
-
-  // If operator is just an identifier then convert it into a variable node
-  let operatorAsAbs: Abs<T> = isOfVariableNameType<T>(operator) ? unappliedVar(operator) : operator
-
-  // If operand is just an identifier then convert it into a variable node
-  let rands = isOfVariableNameType(operands) ? unappliedVar(operands) : operands
-
-  // if single operand then make it into a singleton array
-  let randsAsArray = isSingletonAST(rands) ? [rands] : rands
-
-  if (isDummy(operatorAsAbs)) {
-    return operatorAsAbs.body.kind == "App"
-      // combine consecutive application
-      ? { kind: "Abs", boundVariables: [], body: { kind: "App", operator: operatorAsAbs.body.operator, operands: operatorAsAbs.body.operands.concat(randsAsArray) } }
-      // combine consecutive application
-      : { kind: "Abs", boundVariables: [], body: { kind: "Var", name: operatorAsAbs.body.name, arguments: operatorAsAbs.body.arguments.concat(randsAsArray) } }
-  } else {
-    return { kind: "Abs", boundVariables: [], body: { kind: "App", operator: operatorAsAbs, operands: randsAsArray } }
-  }
-}
-
-////////////////// Alternating-AST with variable named with string identifiers.
-
-// An implementation of variable labels where the variable
-// name is specified in every node of the tree
-// by the name identifier itself
-declare interface String {
-  lookup<T>(bindersFromRoot: Abs<T>[], freeVariableIndices: identifier[]): string
-}
-
-String.prototype.lookup = function<T> (bindersFromRoot: Abs<T>[], freeVariableIndices: identifier[]) {
-  // The name of the variable occurrence is just name identifier itself!
-  return this.toString()
-}
-
-/// Alternating-AST with variable named with string identifiers
-/// The alternating-AST of a lambda term always starts with a lambda node
-type AltLambda = Abs<identifier>
-
-//////////
-/// Term examples
-
-let identity = abs(['x'], 'x')
-let delta = abs(['x'], app('x', 'x'))
-var omega = app(delta, delta)
-
-/// Neil Jones's example: J = (\u.u(x u))(\v.v y)
-let neil =
-  app(abs(['u'], app('u', app('x', 'u'))),
-    abs(['v'], app('v', 'y')))
-
-let varity =
-  abs(['t'], app('t', [abs(['n', 'a', 'x'], app('n', abs(['s','z'], app('a', [ app('s'), app('x', [app('s'), app('z')])])))),
-                      abs(['a'], 'a'),
-                      abs(['z0'], 'z0')
-                    ] ))
-
-let two = abs(['s2', 'z2'], app('s2', app('s2', 'z2')))
-
-let varityTwo = app(varity, two)
-
-console.log(printLambdaTerm(identity).prettyPrint)
-console.log(printLambdaTerm(omega).prettyPrint)
-console.log(printLambdaTerm(neil).prettyPrint)
-console.log(printLambdaTerm(varityTwo).prettyPrint)
-//////////
-
-function findLastIndex<T>(a: T[], condition: (element: T, index: number) => boolean): undefined | [number, T] {
-  for (var i = a.length - 1; i >= 0; i--) {
-    let e = a[i]
-    if (condition(e, i)) {
-      return [i, e]
-    }
-  }
-  return undefined
-}
-
-/// A deBruijn-like encoding where the name of a variable occurrence
-/// is defined by a pair of integers referencing to the lambda-binder
-/// and the index of the name in the lambda-binder
-class DeBruijnPair implements NameLookup {
-  // Depth is the distance from the variable node to its binder node in the path to the tree root
-  // (1 for the parent node, and so on)
-  depth: number = 0
-  // Index of the variable name in the lambda-binder
-  index: number = 0
-
-  constructor(depth:number, index:number) {
-    this.depth = depth
-    this.index = index
-  }
-
-  /// Lookup name of a bound variable.
-  /// If the variable is bound, return the binder and the name of the variable ([Abs<DeBruijnPair>, identifier])
-  /// If it's a free variable, return the name of the free variable (identifier)
-  lookupBinderAndName<T>(
-    bindersFromRoot: (Abs<T>|GhostAbsNode)[],
-    freeVariableIndices: identifier[]
-  ): { binder: Abs<T> | GhostAbsNode | undefined, name: identifier }
-    {
-    let binderIndex = bindersFromRoot.length - (this.depth + 1) / 2
-    let binder = bindersFromRoot[binderIndex]
-    let root = bindersFromRoot[0]
-    let isBoundByRoot = binderIndex == 0
-    let freeVariableIndex = this.index - root.boundVariables.length - 1
-    if (isBoundByRoot && freeVariableIndex >= 0) {
-      return { binder: undefined, name: freeVariableIndices[freeVariableIndex] }
-    } else {
-      let resolvedName =
-        this.index > binder.boundVariables.length
-        ?
-        // unresolved ghost variable name (should never happen on core-projected traversals)
-         '#(' + this.depth + ',' + this.index + ')'
-        : binder.boundVariables[this.index - 1]
-      return { binder: binder, name: resolvedName }
-    }
-  }
-
-  lookup<T>(bindersFromRoot: Abs<T>[], freeVariableIndices: identifier[]): string {
-    let binderAndName = this.lookupBinderAndName(bindersFromRoot, freeVariableIndices)
-    return binderAndName.name + (printDeBruijnPairs ? '(' + this.depth + ',' + this.index + ')' : '')
-  }
-
-}
-
-/// Convert an AST of type Abs<identifier> to an AST of type Abs<DeBruijnPair>
-function toDeBruijnAST(
-  /// the node of the alternating AST to convert
-  node: Abs<identifier>,
-  /// the list of binder nodes from the root
-  bindersFromRoot: Abs<identifier>[],
-  /// map that assigns an index to every free variable seen so far
-  freeVariableIndices:identifier[]
-): Abs<DeBruijnPair>
-{
-  var newBindersFromRoot = bindersFromRoot.concat([node])
-  let VarOrApp_Node = () : Var<DeBruijnPair> | App<DeBruijnPair> =>
-    {
-      let bodyNode = node.body
-      switch (bodyNode.kind) {
-      case "Var":
-        let variableName = bodyNode.name
-        /// find the variable binder
-        let binderLookup = findLastIndex(newBindersFromRoot, b => b.boundVariables.indexOf(variableName) >= 0)
-
-        var binder : DeBruijnPair
-        if (binderLookup !== undefined) {
-          let [binderIndex, b] = binderLookup
-          let binderDistance = newBindersFromRoot.length - binderIndex
-          binder = new DeBruijnPair(2 * binderDistance - 1, b.boundVariables.indexOf(variableName) + 1)
-          verbose && console.log('bindersFromRoot:' + newBindersFromRoot.map(x => '[' + x.boundVariables.join(' - ') + ']').join('\\') + ' varName:' + variableName + ' binderIndex:' + binderIndex + ' depth:' + binder.depth + ' binderVarNames:' + b.boundVariables.join('-'))
-        }
-        // no binder -> x is a free variable and its enabler is the root
-        else {
-          let j = lookupOrCreateFreeVariableIndex(freeVariableIndices, variableName)
-          let root = newBindersFromRoot[0]
-          binder = new DeBruijnPair(2 * newBindersFromRoot.length - 1, root.boundVariables.length + j)
-        }
-        return {
-          kind: "Var",
-          name: binder,
-          arguments: bodyNode.arguments.map(o => toDeBruijnAST(o, newBindersFromRoot, freeVariableIndices))
-        }
-      case "App":
-        return {
-          kind: "App",
-          operator: toDeBruijnAST(bodyNode.operator, newBindersFromRoot, freeVariableIndices),
-          operands: bodyNode.operands.map(o => toDeBruijnAST(o, newBindersFromRoot, freeVariableIndices))
-        }
-      }
-    }
-  return {
-    kind: "Abs",
-    boundVariables: node.boundVariables,
-    body: VarOrApp_Node()
-  }
-}
-
-
-console.log('Test printing a lambda term from the deBruijn AST')
-printDeBruijnPairs = false
-let d = printLambdaTerm(toDeBruijnAST(omega, [], [])).prettyPrint
-let d2 = printLambdaTerm(omega).prettyPrint
-printDeBruijnPairs = true
-console.log(d)
-console.log(d2)
-if(d !== d2 ) {
-  throw "Pretty printing should give the same result"
-}
 
 ////////// Justified sequences
+
+/// Ghosts variable node
+type GhostVarNode = {
+  kind: 'GhostVar'
+}
+
+/// Ghost abstraction node
+type GhostAbsNode = {
+  kind: 'GhostAbs',
+  /// List of bound variable names: always empty in a traversal, but needed for the core projection calculation
+  boundVariables: identifier[]
+}
 
 /// A justification pointer
 type Pointer = {
@@ -302,93 +26,59 @@ type Pointer = {
   label: number
 }
 
-/// Ghosts variable node
-type GhostVarNode  = {
-  kind: 'GhostVar'
-}
-
-/// Ghost abstraction node
-type GhostAbsNode = {
-  kind: 'GhostAbs',
-  /// list of bound variable names: not used for traversal but needed: for core projection calculation
-  boundVariables: identifier[]
-}
-
-/// Occurrence of a ghosts variable node
-type GhostVarOccurrence = {
-  node: GhostVarNode
-  /// Pointer to the justifying occurrence
-  justifier: Pointer
-}
-
-/// Occurrence of a ghosts abstraction
-type GhostAbsOccurrence = {
-  node: GhostAbsNode,
-  /// Pointer to the justifying occurrence
-  justifier: Pointer
-}
-
-type GhostOccurrence = GhostVarOccurrence | GhostAbsOccurrence
-
-type AbsOccurrence<T> = {
-  node: Abs<T>
-  /// Pointer to the justifying occurrence (of the parent-node)
-  justifier: Pointer | "Initial"
-}
-
-type VarOccurrence<T> = {
-  node: Var<T>
-  /// Pointer to the justifying lambda-occurrence
-  justifier: Pointer
-}
-
-type AppOccurrence<T> = {
-  node: App<T>
-}
-
-type StructuralOccurrence<T> = AbsOccurrence<T> | VarOccurrence<T> | AppOccurrence<T>
+/// An occurrence of a node of type N
+type NodeOccurrence<N> = { node: N }
 
 /// Node scope
-enum Scope {
-  /// Internal node: nodes hereditarily enabled by an @-node
-  Internal,
-  /// External node: nodes hereditarily enabled by the tree root
-  External
-}
+/// Internal node: nodes hereditarily enabled by an @-node
+/// External node: nodes hereditarily enabled by the tree root
+enum Scope { Internal, External }
 
-/// Cache the scope (external or internal) of the underlying node in the occurrence itself
-/// (Note: the scope is recoverable from the hereditary justification of the occurrence in the sequence ).
-type OccWithScope<N> = N & {
-  scope: Scope
-}
+/// An occurrence of a node of type N
+type InitialOccurrence<N> = NodeOccurrence<N> & { justifier: undefined }
+
+/// Occurrence with a justification pointer.
+///   - For a lambda-node distinct from the root: points to its parent-node
+///   - For an internal variable: point to the occurrence of the lambda-node in the P-view binding the variable.
+///
+/// We cache the scope (external or internal) of the underlying node in the occurrence itself
+/// (The scope is recoverable from the hereditary justification of the occurrence in the sequence.)
+type JustifiedOccurrence<N> = NodeOccurrence<N> & { justifier: Pointer, scope: Scope }
+
+type StructuralAbsOccurrence<T> = JustifiedOccurrence<Abs<T>> | InitialOccurrence<Abs<T>>
+type StructuralVarOccurrence<T> = JustifiedOccurrence<Var<T>>
+type StructuralOccurrence<T> = StructuralAbsOccurrence<T> | StructuralVarOccurrence<T> | AppOccurrence<T>
+
+type AppOccurrence<T> = InitialOccurrence<App<T>>
+type AbsOccurrence<T> = StructuralAbsOccurrence<T> | JustifiedOccurrence<GhostAbsNode>
+type VarOccurrence<T> = StructuralVarOccurrence<T> | JustifiedOccurrence<GhostVarNode>
 
 /// An node occurrence in a justified sequence
-type Occurrence<T> = OccWithScope<GhostOccurrence | StructuralOccurrence<T>>
+type Occurrence<T> = AbsOccurrence<T> | VarOccurrence<T> | AppOccurrence<T>
 
-/// lookup the index assigned to a free variable, or create one if it is not defined yet
-function lookupOrCreateFreeVariableIndex(freeVariableIndices: string[], variableName: string) {
-  let j = freeVariableIndices.indexOf(variableName)
-  return (j < 0)
-    // create a fresh free variable name
-    ? freeVariableIndices.push(variableName)
-    : j + 1
+function isAbstractionOccurrence<T>(o: Occurrence<T>): o is AbsOccurrence<T> {
+  return o.node.kind == 'GhostAbs' || o.node.kind == 'Abs'
 }
-
-function isAbstractionOccurrence<T>(n: Occurrence<T>): n is OccWithScope<AbsOccurrence<T> | GhostAbsOccurrence> {
-  return n.node.kind == 'GhostAbs' || n.node.kind == 'Abs'
+function isVariableOccurrence<T>(o: Occurrence<T>): o is VarOccurrence<T> {
+  return o.node.kind == 'GhostVar' || o.node.kind == 'Var'
 }
-function isVariableOccurrence<T>(n: Occurrence<T>): n is OccWithScope<VarOccurrence<T> | GhostVarOccurrence> {
-  return n.node.kind == 'GhostVar' || n.node.kind == 'Var'
+function isApplicationOccurrence<T>(o: Occurrence<T>): o is AppOccurrence<T> {
+  return o.node.kind == 'App'
 }
-function isApplicationOccurrence<T>(n: Occurrence<T>): n is OccWithScope<AppOccurrence<T>> {
-  return n.node.kind == 'App'
+function isStructuralOccurrence<T>(o: Occurrence<T>): o is StructuralOccurrence<T> {
+  return o.node.kind !== 'GhostVar' && o.node.kind !== 'GhostAbs'
 }
-function isStructuralOccurrence<T>(t: Occurrence<T>): t is OccWithScope<StructuralOccurrence<T>> {
-  return t.node.kind !== 'GhostVar' && t.node.kind !== 'GhostAbs'
+function isInitialOccurrence<T>(o: Occurrence<T>): o is InitialOccurrence<Abs<T>> | InitialOccurrence<App<T>> {
+  return o.justifier === undefined
 }
 
-function isInternal<T> (o: Occurrence<T>) { return o.scope == Scope.Internal }
-function isExternal<T> (o: Occurrence<T>) { return o.scope == Scope.External }
+let scopeFromOccurrence = <T>(o: Occurrence<T>) : Scope =>
+  isInitialOccurrence(o)
+    ? (isAbstractionOccurrence(o) ? Scope.External : Scope.Internal)
+    : o.scope
+
+let isInternal = <T>(o: Occurrence<T>): boolean => scopeFromOccurrence(o) == Scope.Internal
+let isExternal = <T>(o: Occurrence<T>): boolean => scopeFromOccurrence(o) == Scope.External
 
 /// A justified sequence of node occurrences
 type JustSeq<T> = Occurrence<T>[]
@@ -406,7 +96,7 @@ function* pview<T>(t: JustSeq<T>): IterableIterator<[Occurrence<T>, number]> {
     || isApplicationOccurrence(lastOccurrence)) {
       k = 1
     } else if (isAbstractionOccurrence(lastOccurrence)) {
-      if (lastOccurrence.justifier == "Initial") {
+      if (isInitialOccurrence(lastOccurrence)) {
         return // initial node => end of P-view
       } else {
         k = lastOccurrence.justifier.distance
@@ -418,7 +108,7 @@ function* pview<T>(t: JustSeq<T>): IterableIterator<[Occurrence<T>, number]> {
 }
 
 /// Arity of a node occurrence
-function arity<T>(o: GhostOccurrence | StructuralOccurrence<T>) : number {
+function arity<T>(o: Occurrence<T>) : number {
   switch (o.node.kind) {
     case "GhostAbs":
     case "GhostVar":
@@ -458,7 +148,7 @@ function dynamicArity<T>(t: JustSeq<T>) : number {
 /// childIndex ranges from
 ///   1 to arity(x) for a variable-node
 ///   0 to arity(x) for an @-node
-function childOf<T>(o: (GhostVarOccurrence | VarOccurrence<T> | AppOccurrence<T>), childIndex: number): Abs<T> | GhostAbsNode {
+function childOf<T>(o: VarOccurrence<T> | AppOccurrence<T>, childIndex: number): Abs<T> | GhostAbsNode {
   switch (o.node.kind) {
   case "GhostVar":
     return { kind: "GhostAbs", boundVariables: [] }
@@ -476,26 +166,22 @@ function childOf<T>(o: (GhostVarOccurrence | VarOccurrence<T> | AppOccurrence<T>
 
 function createOccurrenceOfChildOf<T>(
   /// occurrence of the parent node
-  m: OccWithScope<GhostVarOccurrence | VarOccurrence<T> | AppOccurrence<T>>,
+  m: VarOccurrence<T> | AppOccurrence<T>,
   /// child index defining the node to create an occurrence of
   childIndex: number,
   /// distance from the occurrence of the node m in the sequence
   distance: number
   )
-  : OccWithScope<AbsOccurrence<T> | GhostAbsOccurrence>
+  : JustifiedOccurrence<Abs<T>> | JustifiedOccurrence<GhostAbsNode>
 {
-  let child = childOf(m, childIndex)
-  let o = {
-    node: child,
-    justifier: { distance: distance, label: childIndex },
-    scope: m.scope
-  }
-  if (child.kind == "Abs") {
-    return o as OccWithScope<AbsOccurrence<T>>
-  } else {//if (child.label == "GhostAbs") {
-    (o as OccWithScope<GhostAbsOccurrence>).node.boundVariables = []
-    return o as OccWithScope<GhostAbsOccurrence>
-  }
+  let c : Abs<T> | GhostAbsNode = childOf(m, childIndex)
+  let justifier = { distance: distance, label: childIndex }
+  let scope = scopeFromOccurrence(m)
+  // The common sub-expression below cannot be simplified due to
+  // TypeScript typechecker inability to distribute generic types
+  return (c.kind == "Abs")
+    ? { node: c, justifier: justifier, scope: scope }
+    : { node: c, justifier: justifier, scope: scope }
 }
 
 /// Return the list of possible occurrences opening up a new strand
@@ -503,8 +189,8 @@ function createOccurrenceOfChildOf<T>(
 /// Returns void if the traversal is maximal
 function newStrandOpeningOccurrences<T>(
   t: JustSeq<T>,
-  lastOccurrence: OccWithScope<GhostVarOccurrence | VarOccurrence<T>>
-): OccWithScope<GhostAbsOccurrence | AbsOccurrence<T>>[] {
+  lastOccurrence: VarOccurrence<T>
+): (JustifiedOccurrence<Abs<T>> | JustifiedOccurrence<GhostAbsNode>)[] {
   let da = dynamicArity(t)
   var possibleChildren =
       Array.apply(null, Array(da))
@@ -514,36 +200,27 @@ function newStrandOpeningOccurrences<T>(
 
 ////////// Traversals
 
-/// To support traversals, the type T to encode variable labels
-// must support the LocateBinder interface
-interface LocateBinder extends NameLookup {
-  /// Locate the binder occurrence from the P-view
-  /// at an occurrence of a variable node with label encoded by type T
-  /// The P-view (which represents the path from the variable node to the tree root, see paper)
-  //  is provided as an iterable that enumerates backwards
-  /// the occurrence in the P-view.
-  /// The function must return a justification pointer to the occurrence of the binder
-  findBinder<T>(
-    pview: IterableIterator<[Occurrence<T>, number]>,
-    freeVariableIndices: identifier[]): Pointer
-}
+/// To support traversals for an AST with variable name references of type T,
+/// a function of the following type must be implemented.
+///
+/// The P-view (which represents the path from the variable node to the tree root, see paper)
+/// is provided as an iterable that enumerates backwards the occurrence in the P-view.
+/// The function must locate the binder to the specified variable (with binding reference of type T)
+/// and return a justification pointer to the occurrence of the binder.
+type LocateBinder<T> = (variableNameReference:T, pview: IterableIterator<[Occurrence<T>, number]>, freeVariableIndices: identifier[]) => Pointer
 
-// Implement interface LocateBinder for AST where the variable labels
-// are encoded as simple name identifiers (string)
-declare interface String {
-  findBinder<T>(
-    pview: IterableIterator<[Occurrence<T>, number]>,
-    freeVariableIndices: identifier[]): Pointer
-}
-/// When using name identifier, the binder is the first lambda node
+/// Implement 'findBinder' for AST where the variable name references
+/// are encoded as simple name identifiers (string)
+///
+/// With identifier names, the binder is the first lambda node
 /// in the P-view binding that particular variable name.
 /// If no such occurrence exists then it's a free variable
 /// (justified by the tree root--the initial node occurrence in the P-view)
-String.prototype.findBinder = function<T> (
+function Identifier_findBinder<T> (
+  variableName:identifier,
   pview: IterableIterator<[Occurrence<T>, number]>,
   freeVariableIndices: identifier[]
 ) {
-  let variableName = this.toString()
   // read the P-view backward and stop at the first binder containing the variable name
   let d = 1
   for (let [b, _] of pview) {
@@ -552,7 +229,7 @@ String.prototype.findBinder = function<T> (
       if(i>-1) {
         return { distance: d, label: i+1 }
       }
-      d+= b.justifier == "Initial" ? 0 : b.justifier.distance
+      d += isInitialOccurrence(b) ? 0 : b.justifier.distance
     } else {
       d++
     }
@@ -561,33 +238,28 @@ String.prototype.findBinder = function<T> (
   return { distance: d, label: lookupOrCreateFreeVariableIndex(freeVariableIndices, variableName) }
 }
 
-declare interface DeBruijnPair {
-  findBinder<T>(
-    pview: IterableIterator<[Occurrence<T>, number]>,
-    freeVariableIndices: identifier[]): Pointer
-}
-/// When encoding variable labels as DeBruijnPair, the
-/// binder is given by walking back the P-view (path to the root)
-/// and stopping after 'depth' number of occurrences, where
-/// 'depth' is the deBruijn static depth (i.e. the number of nodes separating
-/// the variable from its 'enabler' in the tree)
-DeBruijnPair.prototype.findBinder = function<T>(
+/// When using name identifier, the binder is the first lambda node
+/// in the P-view binding that particular variable name.
+/// If no such occurrence exists then it's a free variable
+/// (justified by the tree root--the initial node occurrence in the P-view)
+function DeBruijnPair_findBinder<T>(
+  variableName: DeBruijnPair,
   pview: IterableIterator<[Occurrence<T>, number]>,
   freeVariableIndices: identifier[]
 ) {
-  let enablerDepth: number = this.depth
+  let enablerDepth: number = variableName.depth
   var distance = 1
-  for (let [_,d] of pview) {
+  for (let [_, d] of pview) {
     enablerDepth--
     if (enablerDepth <= 0) {
       break;
     }
     distance += d
   }
-  return { distance: distance, label: this.index }
+  return { distance: distance, label: variableName.index }
 }
 
-type Extension<T> = Occurrence<T> | (OccWithScope<AbsOccurrence<T>|GhostAbsOccurrence>)[]
+type Extension<T> = Occurrence<T> | (JustifiedOccurrence<Abs<T>> | JustifiedOccurrence<GhostAbsNode>)[]
 
 function isDeterministic<T>(e: Extension<T>): e is Occurrence<T> {
   return (e as Occurrence<T>) !== undefined && (e as Occurrence<T>).node !== undefined
@@ -596,8 +268,10 @@ function isDeterministic<T>(e: Extension<T>): e is Occurrence<T> {
 /// Extend a traversal using the traversal rules of the 'normalizing traversals' from the paper
 /// The input traversal is not modified, instead it returns the list of possibles node occurrences
 /// to traverse, or just void if the traversal is maximal
-function extendTraversal<T extends LocateBinder>(
-  treeRoot: Abs<T>, t: JustSeq<T>,
+function extendTraversal<T>(
+  findBinder: LocateBinder<T>,
+  treeRoot: Abs<T>,
+  t: JustSeq<T>,
   freeVariableIndices: identifier[]
 ): Extension<T>
 {
@@ -608,7 +282,7 @@ function extendTraversal<T extends LocateBinder>(
   if (lastOccurrence === undefined) { /// Empty sequence?
     return {
       node: treeRoot,
-      justifier: "Initial",
+      justifier : undefined,
       scope: Scope.External
     }
   } else if (isApplicationOccurrence(lastOccurrence) ){
@@ -623,7 +297,7 @@ function extendTraversal<T extends LocateBinder>(
       let distance = 2+lastOccurrence.justifier.distance
       // Occurrence `m` from the paper, is the node preceding the variable occurrence's justifier.
       // Type assertion: by construction traversal verify alternation therefore m is necessarily a variable occurrence
-      let m = t[nextIndex - distance] as OccWithScope<VarOccurrence<T> | GhostVarOccurrence | AppOccurrence<T>>
+      let m = t[nextIndex - distance] as VarOccurrence<T> | AppOccurrence<T>
       return createOccurrenceOfChildOf(m, lastOccurrence.justifier.label, distance)
     } else { /// external variable
       return newStrandOpeningOccurrences(t, lastOccurrence)
@@ -634,11 +308,11 @@ function extendTraversal<T extends LocateBinder>(
       if (bodyNode.kind == "App") {
         return {
           node: bodyNode, // traverse the body of the lambda
-          justifier: "Initial",
-          scope: Scope.Internal
+          scope: Scope.Internal,
+          justifier: undefined
         }
       } else {
-        let pointer = bodyNode.name.findBinder(pview(t), freeVariableIndices)
+        let pointer = findBinder(bodyNode.name, pview(t), freeVariableIndices)
 
         let m = t[nextIndex - pointer.distance] // if d= 1 then the justifier is the last occurrence
         return {
@@ -647,7 +321,7 @@ function extendTraversal<T extends LocateBinder>(
             distance: pointer.distance,
             label: pointer.label
           },
-          scope: m.scope
+          scope: scopeFromOccurrence(m)
         }
       }
     } else { /// Traverse the child of the ghost lambda node
@@ -661,20 +335,20 @@ function extendTraversal<T extends LocateBinder>(
         node: { kind : "GhostVar"},
         justifier : { distance: justifierDistance,
                       label: arity(mu) + i - arity(m) },
-        scope : mu.scope
+        scope: scopeFromOccurrence(mu)
       }
     }
   }
 }
 
-function printPointer(j:Pointer|"Initial") {
-  return (j == "Initial") ? '' : '('+j.distance+','+j.label+')'
+function printPointer(p: Pointer) {
+  return '(' + p.distance + ',' + p.label + ')'
 }
 
 function printOccurrence<T>(t: JustSeq<T>, o: Occurrence<T>, index: number, freeVariableIndex: identifier[]) : string {
   if(isStructuralOccurrence(o)){
     if(isAbstractionOccurrence(o)) {
-      return '[' + o.node.boundVariables.join(' ') + ']' + printPointer(o.justifier)
+      return '[' + o.node.boundVariables.join(' ') + ']' + (isInitialOccurrence(o) ? '' : printPointer(o.justifier))
     } else if (isVariableOccurrence(o)) {
       let j = t[index - o.justifier.distance].node as Abs<T>
       let name =
@@ -735,9 +409,14 @@ function* coreProjection<T>(t: JustSeq<T>) {
   }
 }
 
-function enumerateAllTraversals<T extends LocateBinder>(treeRoot: Abs<T>, t: JustSeq<T>, freeVariableIndices: identifier[]) {
+function enumerateAllTraversals<T>(
+  findBinder: LocateBinder<T>,
+  treeRoot: Abs<T>,
+  t: JustSeq<T>,
+  freeVariableIndices: identifier[]
+) {
   while(true) {
-    var next = extendTraversal(treeRoot, t, freeVariableIndices)
+    var next = extendTraversal(findBinder, treeRoot, t, freeVariableIndices)
     if(isDeterministic(next)) {
       t.push(next) // append the traversed occurrence
       verbose && console.log("extended:" + printSequence(t, freeVariableIndices))
@@ -754,7 +433,7 @@ function enumerateAllTraversals<T extends LocateBinder>(treeRoot: Abs<T>, t: Jus
         verbose && console.log("non-det-before:" + printSequence(t, freeVariableIndices))
         let t2: JustSeq<T> = t.concat(o)
         verbose && console.log("chose " + (printPointer(o.justifier) + ":" + printSequence(t2, freeVariableIndices)))
-        enumerateAllTraversals(treeRoot, t2, freeVariableIndices)
+        enumerateAllTraversals(findBinder, treeRoot, t2, freeVariableIndices)
       }
       return
     }
@@ -762,23 +441,28 @@ function enumerateAllTraversals<T extends LocateBinder>(treeRoot: Abs<T>, t: Jus
 }
 
 /// Evaluate the term with term tree root treeRoot
-function evaluate<T extends LocateBinder>(term: Abs<T>) {
-  console.log('Traversing ' + printLambdaTerm(term).prettyPrint)
-  var freeVariableIndex: identifier[] = []
-
-  enumerateAllTraversals(term, [], freeVariableIndex)
+function evaluate<T extends NameLookup>(
+  findBinder: LocateBinder<T>,
+  term: Abs<T>
+) {
+  console.log('Traversing ' + printLambdaTerm(term, false).prettyPrint)
+  enumerateAllTraversals(findBinder, term, [], [])
 }
 
-evaluate(neil)
+console.log("===== Enumerating all traversals")
+evaluate(Identifier_findBinder, neil)
 
 /// Traverse a traversal until the next strand
 /// Return false if the input traversal is maximal
-function traverseNextStrand<T extends LocateBinder>(treeRoot: Abs<T>, t: JustSeq<T>, freeVariableIndices: identifier[]) {
-  var next = extendTraversal(treeRoot, t, freeVariableIndices)
+function traverseNextStrand<T extends NameLookup>(
+  findBinder: LocateBinder<T>,
+  treeRoot: Abs<T>, t: JustSeq<T>, freeVariableIndices: identifier[]
+) {
+  var next = extendTraversal(findBinder, treeRoot, t, freeVariableIndices)
   while (isDeterministic(next)) {
     t.push(next) // append the traversed occurrence
     verbose && console.log("extended:" + printSequence(t, freeVariableIndices))
-    next = extendTraversal(treeRoot, t, freeVariableIndices)
+    next = extendTraversal(findBinder, treeRoot, t, freeVariableIndices)
   }
   return next.length>0
 }
@@ -787,25 +471,26 @@ function traverseNextStrand<T extends LocateBinder>(treeRoot: Abs<T>, t: JustSeq
 /// This 'read-out' implementation produces an AST with DeBruijn variable references (rather than identifiers).
 /// Variable name collision can occur if pretty-printing the term by just looking up variable name
 /// without displaying the associated deBruijn pairs.
-function evaluateAndReadout<T extends LocateBinder>(
+function evaluateAndReadout<T extends NameLookup>(
+  findBinder: LocateBinder<T>,
   root:Abs<T>,
   freeVariableIndices: identifier[] = []
 ) : [Abs<DeBruijnPair>, identifier[]]
 {
-  console.log('Evaluating ' + printLambdaTerm(root, freeVariableIndices).prettyPrint)
+  console.log('Evaluating ' + printLambdaTerm(root, false, freeVariableIndices).prettyPrint)
 
   /// Read out the subterm at ending at the last node of traversal t
   function readout(
       // A strand-complete traversal
       t: JustSeq<T>): Abs<DeBruijnPair> {
-    traverseNextStrand<T>(root, t, freeVariableIndices)
+    traverseNextStrand<T>(findBinder, root, t, freeVariableIndices)
 
     // get the last two nodes from the core projection
     var p = coreProjection(t)
     // The strand ends with an external variable, call it x
-    let strandEndVar = p.next().value as OccWithScope<VarOccurrence<T> | GhostVarOccurrence>
+    let strandEndVar = p.next().value as VarOccurrence<T>
      // The strand starts with an external lambda, call it \lambda y1 .... y_n
-    let strandBeginAbs = p.next().value as OccWithScope<AbsOccurrence<T> | GhostAbsOccurrence>
+    let strandBeginAbs = p.next().value as AbsOccurrence<T>
 
     let argumentOccurrences = newStrandOpeningOccurrences(t, strandEndVar)
     if (argumentOccurrences.length == 0) {
@@ -832,24 +517,25 @@ function evaluateAndReadout<T extends LocateBinder>(
 }
 
 function evaluateAndPrintNormalForm(term: Abs<identifier>) {
-  let [readout, freeVariableIndices] = evaluateAndReadout(term)
-  console.log(printLambdaTerm(readout, freeVariableIndices).prettyPrint)
+  let [readout, freeVariableIndices] = evaluateAndReadout(Identifier_findBinder, term)
+  console.log(printLambdaTerm(readout, false, freeVariableIndices).prettyPrint)
 }
 
+console.log("===== Evaluation without name resolution")
 evaluateAndPrintNormalForm(neil)
-
 evaluateAndPrintNormalForm(varityTwo)
+
 
 /// Pretty-printing of both AST type should produce the same output
 function test(term: Abs<identifier>) {
-  let [readout1, freeVariableIndices1] = evaluateAndReadout(term)
-  let n1 = printLambdaTerm(readout1, freeVariableIndices1).prettyPrint
+  let [readout1, freeVariableIndices1] = evaluateAndReadout(Identifier_findBinder, term)
+  let n1 = printLambdaTerm(readout1, true, freeVariableIndices1).prettyPrint
   console.log('n1: ' + n1)
 
   var freeVariableIndex2: identifier[] = []
   var term2 = toDeBruijnAST(term, [], freeVariableIndex2)
-  let [readout2, _] = evaluateAndReadout(term2, freeVariableIndex2)
-  let n2 = printLambdaTerm(readout2, freeVariableIndex2).prettyPrint
+  let [readout2, _] = evaluateAndReadout(DeBruijnPair_findBinder, term2, freeVariableIndex2)
+  let n2 = printLambdaTerm(readout2, true, freeVariableIndex2).prettyPrint
   console.log('n2: ' + n2)
 
   if(n1 !== n2) throw "Test failed: normalizing both AST types should give the same result"
@@ -983,39 +669,11 @@ function resolveNameAmbiguity (
 }
 
 function evaluateResolveAndPrintNormalForm(term: Abs<identifier>) {
-  let [readout, freeVariableIndices] = evaluateAndReadout(term)
+  let [readout, freeVariableIndices] = evaluateAndReadout(Identifier_findBinder, term)
   let resolvedNameReadout = resolveNameAmbiguity(readout, freeVariableIndices, [])
-  console.log(printLambdaTerm(resolvedNameReadout, freeVariableIndices).prettyPrint)
+  console.log(printLambdaTerm(resolvedNameReadout, false, freeVariableIndices).prettyPrint)
 }
 
+console.log("===== Evaluation with name-preserving resolution")
 evaluateResolveAndPrintNormalForm(neil)
-
 evaluateResolveAndPrintNormalForm(varityTwo)
-
-
-/// NOTES and REMARKS:
-///
-/// - IDEA: pointer is not needed for free variable occurrences!
-///   Pointer to the tree node suffice! Could simplify traversal
-///   implementation even further by introducing a new type FreeVarOccurrence<T> with no pointer
-
-////// Tests cases:
-//
-// lambda x.x
-// (lambda x.x x)(lambda x.x x)
-// (lambda u.u (x u))(lambda v.v y)
-
-// Test printing a lambda term from the deBruijn AST
-// (lambda x.x x)(lambda x.x x)
-
-// Traversing (lambda u.u (x u))(lambda v.v y)
-// Maximal traversal reached:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--[](1,1)--u(7,1)--[v](9,1)--v(1,1)--$[](3,1)--#(5,1)--$[](1,1)--#(3,1)--[](5,1)--y(17,2)
-//                projection:[]--x(1,1)--[v](1,1)--#(1,1)--$[](1,1)--y(5,2)
-// Maximal traversal reached:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--$[](1,2)--#(3,1)--[](5,1)--y(11,2)
-//                projection:[]--x(1,1)--$[](1,2)--y(3,2)
-
-// Evaluating (lambda u.u (x u))(lambda v.v y)x (lambda v.v y) y
-// x(lambda v.v y) y
-
-// Evaluating (lambda t.t (lambda n a x.n (lambda s z.a s (x s z))) (lambda a.a) (lambda z0.z0))(lambda s2 z2.s2 (s2 z2))
-// lambda x x s z.s (x s (x s z))

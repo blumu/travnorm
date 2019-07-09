@@ -1,10 +1,13 @@
 {
     "compilerOptions": {
         "target": "es6",
-        "module": "commonjs",
+        "composite": true,
+        "module": "system",
         "outDir": "out",
         "sourceMap": true,
         "strictNullChecks": true,
-        "strict": true
-    }
+        "strict": true,
+        "outFile": "out/travnormcombined.js"
+    },
+    "exclude": ["out/**"]
 }
