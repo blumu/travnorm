@@ -3,6 +3,8 @@
 
 /// if true then print additional logging
 let verbose = false
+/// if true print traversal after every single extension
+let veryVerbose = false
 
 ////////// Justified sequences
 
@@ -330,7 +332,7 @@ function extendTraversal<T>(
       let justifierDistance = lastOccurrence.justifier.distance + 2
       let mu = t[nextIndex - justifierDistance]
       let i = lastOccurrence.justifier.label
-      verbose && console.log('m:' + arity(m) + ', mu:' + arity(mu) + ', i:' + i)
+      veryVerbose && console.log('[GhostAbs-arity] m:' + arity(m) + ', mu:' + arity(mu) + ', i:' + i)
       return {
         node: { kind : "GhostVar"},
         justifier : { distance: justifierDistance,
@@ -409,34 +411,46 @@ function* coreProjection<T>(t: JustSeq<T>) {
   }
 }
 
+/// Traverse a traversal until the next strand
+/// Return an array of possible next node to traverse,
+/// or [] is reached traversal is maximal
+function traverseNextStrand<T>(
+  findBinder: LocateBinder<T>,
+  treeRoot: Abs<T>, t: JustSeq<T>, freeVariableIndices: identifier[]
+) {
+  var next = extendTraversal(findBinder, treeRoot, t, freeVariableIndices)
+  while (isDeterministic(next)) {
+    t.push(next) // append the traversed occurrence
+    veryVerbose && console.log("extended:" + printSequence(t, freeVariableIndices))
+    next = extendTraversal(findBinder, treeRoot, t, freeVariableIndices)
+  }
+  return next //.length > 0
+}
+
 function enumerateAllTraversals<T>(
   findBinder: LocateBinder<T>,
   treeRoot: Abs<T>,
   t: JustSeq<T>,
-  freeVariableIndices: identifier[]
+  freeVariableIndices: identifier[],
+  depth:number = 0
 ) {
-  while(true) {
-    var next = extendTraversal(findBinder, treeRoot, t, freeVariableIndices)
-    if(isDeterministic(next)) {
-      t.push(next) // append the traversed occurrence
-      verbose && console.log("extended:" + printSequence(t, freeVariableIndices))
-    } else if (next.length == 0) {
-      console.log("Maximal traversal reached:" + printSequence(t, freeVariableIndices))
-      let p = Array.from(coreProjection(t))
-      p.reverse()
-      console.log("               projection:" + printSequence(p, freeVariableIndices))
-      return t
-    } else {
-      /// external variable with multiple non-deterministic choices
-      verbose && console.log("External variable reached with " + next.length + " branch(es):" + printSequence(t, freeVariableIndices))
-      for(let o of next) {
-        verbose && console.log("non-det-before:" + printSequence(t, freeVariableIndices))
-        let t2: JustSeq<T> = t.concat(o)
-        verbose && console.log("chose " + (printPointer(o.justifier) + ":" + printSequence(t2, freeVariableIndices)))
-        enumerateAllTraversals(findBinder, treeRoot, t2, freeVariableIndices)
-      }
-      return
+  let next = traverseNextStrand(findBinder, treeRoot, t, freeVariableIndices)
+
+  let indentLog = "  ".repeat(depth)
+
+  if(next.length > 0) {
+    // external variable with multiple non-deterministic choices
+    verbose && console.log(indentLog + '|Depth:' + depth + "|External variable reached with " + next.length + " branch(es):" + printSequence(t, freeVariableIndices))
+    for (let o of next) {
+      let t2: JustSeq<T> = t.concat(o)
+      verbose && console.log(indentLog + '|Depth:' + depth + '|Choice:' + o.justifier.label + '|Trav: ' + printSequence(t, freeVariableIndices) + ' |Occurrence: ' + printOccurrence(t2, o, t.length, freeVariableIndices))
+      enumerateAllTraversals(findBinder, treeRoot, t2, freeVariableIndices, depth+1)
     }
+  } else {
+    console.log(indentLog + '|Depth:' + depth + "|Maximal traversal:" + printSequence(t, freeVariableIndices))
+    let p = Array.from(coreProjection(t))
+    p.reverse()
+    console.log(indentLog + '|      ' + ' '.repeat(depth.toString().length) + "        projection:" + printSequence(p, freeVariableIndices))
   }
 }
 
@@ -452,20 +466,6 @@ function evaluate<T extends NameLookup>(
 console.log("===== Enumerating all traversals")
 evaluate(Identifier_findBinder, neil)
 
-/// Traverse a traversal until the next strand
-/// Return false if the input traversal is maximal
-function traverseNextStrand<T extends NameLookup>(
-  findBinder: LocateBinder<T>,
-  treeRoot: Abs<T>, t: JustSeq<T>, freeVariableIndices: identifier[]
-) {
-  var next = extendTraversal(findBinder, treeRoot, t, freeVariableIndices)
-  while (isDeterministic(next)) {
-    t.push(next) // append the traversed occurrence
-    verbose && console.log("extended:" + printSequence(t, freeVariableIndices))
-    next = extendTraversal(findBinder, treeRoot, t, freeVariableIndices)
-  }
-  return next.length>0
-}
 
 /// Evaluate and readout the **name-free** normal-form.
 /// This 'read-out' implementation produces an AST with DeBruijn variable references (rather than identifiers).
@@ -482,7 +482,9 @@ function evaluateAndReadout<T extends NameLookup>(
   /// Read out the subterm at ending at the last node of traversal t
   function readout(
       // A strand-complete traversal
-      t: JustSeq<T>): Abs<DeBruijnPair> {
+      t: JustSeq<T>,
+      depth: number
+  ): Abs<DeBruijnPair> {
     traverseNextStrand<T>(findBinder, root, t, freeVariableIndices)
 
     // get the last two nodes from the core projection
@@ -494,9 +496,9 @@ function evaluateAndReadout<T extends NameLookup>(
 
     let argumentOccurrences = newStrandOpeningOccurrences(t, strandEndVar)
     if (argumentOccurrences.length == 0) {
-      verbose && console.log("maximal traversal reached:" + printSequence(t, freeVariableIndices))
+      verbose && console.log('Strand ended|Maximal    |Depth:' + depth + '|Trav: ' + printSequence(t, freeVariableIndices))
     } else {
-      verbose && console.log("end of strand: external variable reached" + printSequence(t, freeVariableIndices))
+      verbose && console.log('Strand ended|Not maximal|Depth:' + depth + '|Trav: ' + printSequence(t, freeVariableIndices))
     }
 
     return {
@@ -508,12 +510,12 @@ function evaluateAndReadout<T extends NameLookup>(
           // Since the core projection of the traversal is the path to the root (see paper),
           // the depth of the variable is precisely the distance to the justifying node in the core projection.
           name: new DeBruijnPair(strandEndVar.justifier.distance, strandEndVar.justifier.label),
-          arguments: argumentOccurrences.map(o => readout(t.concat(o)))
+          arguments: argumentOccurrences.map(o => readout(t.concat(o), depth+1))
         }
     }
   }
 
-  return [readout([]), freeVariableIndices]
+  return [readout([], 0), freeVariableIndices]
 }
 
 function evaluateAndPrintNormalForm(term: Abs<identifier>) {
