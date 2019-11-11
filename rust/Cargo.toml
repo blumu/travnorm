@@ -1,0 +1,13 @@
+[package]
+name = "travnorm"
+version = "0.1.0"
+authors = ["William Blum <william.blum@gmail.com>"]
+build = "build.rs"
+edition = "2018"
+
+[build-dependencies] # <-- We added this and everything after!
+lalrpop = "0.19.5"
+
+[dependencies]
+lalrpop-util = "0.19.5"
+regex = "1"

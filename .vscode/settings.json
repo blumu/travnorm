@@ -3,6 +3,8 @@
         "Subterm",
         "bracketize",
         "combinators",
+        "lalrpop",
+        "lambdaterms",
         "pview",
         "varity"
     ],

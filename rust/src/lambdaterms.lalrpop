@@ -1,0 +1,50 @@
+use std::string::String;
+use crate::ast::{LambdaTerm};
+
+grammar;
+
+
+pub Term : LambdaTerm = {
+    Variable,
+    Lambda,
+    Application,
+}
+
+Variable : LambdaTerm = {
+    <name:Name> => LambdaTerm::Variable(name)
+}
+
+Lambda : LambdaTerm = {
+    LambdaSymbol <vars:Identifiers> "." <body:Term> => LambdaTerm::Lambda(vars, Box::new(body))
+}
+
+LambdaSymbol = {
+    "\\Lambda",
+    "λ"
+}
+
+Application : LambdaTerm = {
+    <u:Operator> <v:Operand> => LambdaTerm::App(Box::new(u), Box::new(v))
+}
+
+Operator : LambdaTerm = {
+    <u:Operand> => u,
+    <u:Application> => u
+}
+
+Operand : LambdaTerm = {
+    <u:Variable> => u,
+    "(" <u:Application> ")" => u,
+    "(" <u:Lambda> ")" => u
+}
+
+Identifiers : Vec<String> = {
+     <v:Name> => vec![v] ,
+     <var:Name> <others:Identifiers> => {
+        let mut others = others;
+        others.push(var);
+        others
+    }
+}
+
+Name: String = <s:r"[a-zA-Z]+"> => s.to_string();
