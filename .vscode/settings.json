@@ -1,6 +1,7 @@
 {
     "cSpell.words": [
         "Subterm",
+        "arity",
         "bracketize",
         "combinators",
         "lalrpop",
