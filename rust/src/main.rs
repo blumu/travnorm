@@ -6,7 +6,9 @@ pub mod ast;
 
 pub mod travnorm;
 
-use crate::travnorm::{traverse, length};
+pub mod term;
+
+use crate::term::{length};
 use std::env;
 
 #[test]

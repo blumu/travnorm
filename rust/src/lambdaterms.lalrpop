@@ -1,5 +1,7 @@
 use std::string::String;
-use crate::ast::{LambdaTerm};
+//use crate::ast::standard::{LambdaTerm, Term};
+
+use crate::ast::standard::{LambdaTerm, Term as AstTerm};
 
 grammar;
 
@@ -11,11 +13,11 @@ pub Term : LambdaTerm = {
 }
 
 Variable : LambdaTerm = {
-    <name:Name> => LambdaTerm::Variable(name)
+    <name:Name> => AstTerm::Variable(name)
 }
 
 Lambda : LambdaTerm = {
-    LambdaSymbol <vars:Identifiers> "." <body:Term> => LambdaTerm::Lambda(vars, Box::new(body))
+    LambdaSymbol <vars:Identifiers> "." <body:Term> => AstTerm::Abs((vars, Box::new(body)))
 }
 
 LambdaSymbol = {
@@ -24,7 +26,7 @@ LambdaSymbol = {
 }
 
 Application : LambdaTerm = {
-    <u:Operator> <v:Operand> => LambdaTerm::App(Box::new(u), Box::new(v))
+    <u:Operator> <v:Operand> => AstTerm::App((Box::new(u), Box::new(v)))
 }
 
 Operator : LambdaTerm = {
