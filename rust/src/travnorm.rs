@@ -2,14 +2,15 @@
 /// William Blum, May 2021
 ///
 //use crate::ast::{LmdTerm};
-use crate::ast;
+use crate::ast::{ alternating_rc as ast};
 use std::cmp;
+use std::rc::Rc;
 
 // if true then print additional logging
-const verbose :bool = false;
+const VERBOSE :bool = false;
 
 // if true print traversal after every single extension
-const veryVerbose :bool = false;
+const VERY_VERBOSE :bool = false;
 
 
 // trait TraversableAst {
@@ -33,13 +34,14 @@ struct GhostAbsNode {
 /// Generalizing the concept of node or occurrences.
 /// Type `S` represents a 'structural' form
 /// Type `G` represents a 'ghost' form
+#[derive(Clone, Copy)]
 enum Generalized<S, G> {
   Structural(S),
   Ghost(G)
 }
 
 /// A generalized abstraction node (i.e. either structural or ghost lambda node)
-type GeneralizedAbsNode<'a, T> = Generalized<&'a ast::alternating::Abs<T>, &'a GhostAbsNode>;
+type GeneralizedAbsNode<T> = Generalized<Rc<ast::Abs<T>>, Rc<GhostAbsNode>>;
 
 /// A justification pointer
 struct Pointer {
@@ -72,23 +74,23 @@ struct JustificationWithScope {
 }
 
 /// An occurrence of a node of type N (without justification pointer)
-struct UnjustifiedOccurrence<'a, N> {
-   node : &'a N
+struct UnjustifiedOccurrence<N> {
+   node : Rc<N>
 }
 
 /// An node occurrence with an associated justification pointer.
 /// - For a lambda-node distinct from the root: points to its parent-node
 /// - For an internal variable: point to the occurrence of the lambda-node in the P-view binding the variable.
-struct JustifiedOccurrence<'a, N> {
+struct JustifiedOccurrence<N> {
   /// the occurring node from the term tree
-  node : &'a N,
+  node : Rc<N>,
   /// justification pointer and scope
   j : JustificationWithScope
 }
 
-struct MaybeJustifiedOccurrence<'a, N> {
+struct MaybeJustifiedOccurrence<N> {
   /// the occurring node from the term tree
-  node : &'a N,
+  node : Rc<N>,
   /// An optional justification pointer. None for an occurrence of an initial node.
   j : Option<JustificationWithScope>
 }
@@ -96,14 +98,14 @@ struct MaybeJustifiedOccurrence<'a, N> {
 /// A generalized occurrence of a variable node is either
 /// - a justified occurrence of a structural variable node
 /// - a justified occurrence of a ghost variable node
-type VarOccurrence<'a, T> = Generalized<JustifiedOccurrence<'a, ast::alternating::Var<T>>, JustifiedOccurrence<'a, GhostVarNode>>;
+type VarOccurrence<T> = Generalized<JustifiedOccurrence<ast::Var<T>>, JustifiedOccurrence<GhostVarNode>>;
 
 /// A generalized occurrence of an abstraction node is either
 /// - a justified occurrence of a structural lambda node (or unjustified occurrence of the root lambda node)
 /// - a justified occurrence of a ghost lambda node
-type AbsOccurrence<'a, T> = Generalized<MaybeJustifiedOccurrence<'a, ast::alternating::Abs<T>>, JustifiedOccurrence<'a, GhostAbsNode>>;
+type AbsOccurrence<T> = Generalized<MaybeJustifiedOccurrence<ast::Abs<T>>, JustifiedOccurrence<GhostAbsNode>>;
 
-type AppOccurrence<'a, T> = UnjustifiedOccurrence<'a, ast::alternating::App<T>>;
+type AppOccurrence<T> = UnjustifiedOccurrence<ast::App<T>>;
 
 /// Generic enum to help create types discriminating over the three possible lambda term node types
 #[derive(Clone, Copy)]
@@ -118,10 +120,10 @@ enum TermBranching<V,L,A> {
 
 
 /// Occurrence of a node in a justified sequence
-type Occurrence<'a, T> = TermBranching<VarOccurrence<'a, T>, AbsOccurrence<'a, T>, AppOccurrence<'a, T>>;
+type Occurrence<T> = TermBranching<VarOccurrence<T>, AbsOccurrence<T>, AppOccurrence<T>>;
 
 /// A justified sequence of node occurrences
-type JustSeq<'a, T> = Vec<Occurrence<'a, T>>;
+type JustSeq<'a, T> = Vec<&'a Occurrence<T>>;
 
 /// Occurrence of structural nodes
 //type StructuralOccurrence<T> = TermBranching<JustifiedOccurrence<ast::Var<T>>, MaybeJustifiedOccurrence<ast::Abs<T>>, AppOccurrence<T>>;
@@ -129,22 +131,22 @@ type JustSeq<'a, T> = Vec<Occurrence<'a, T>>;
 /// A generalized lambda node is either
 /// - a structural lambda node
 /// - a ghost lambda  node
-type GeneralizedAbs<T> = Generalized<ast::alternating::Abs<T>, GhostAbsNode>;
+type GeneralizedAbs<T> = Generalized<Rc<ast::Abs<T>>, Rc<GhostAbsNode>>;
 
-enum Extension<'a, T> {
-   Single(Occurrence<'a, T>),
-   Choice(Vec<JustifiedOccurrence<'a, GeneralizedAbs<T>>>)
+enum Extension<T> {
+   Single(Occurrence<T>),
+   Choice(Vec<JustifiedOccurrence<GeneralizedAbs<T>>>)
 }
 
 trait HasScope {
    fn scope(&self) -> Scope;
 }
 
-impl<'a, T> HasScope for JustifiedOccurrence<'a, T> {
+impl<'a, T> HasScope for JustifiedOccurrence<T> {
   fn scope(&self) -> Scope { self.j.scope }
 }
 
-impl<'a, T> HasScope for MaybeJustifiedOccurrence<'a, T> {
+impl<'a, T> HasScope for MaybeJustifiedOccurrence<T> {
   fn scope(&self) -> Scope {
     match &self.j {
       None => Scope::External,
@@ -153,7 +155,7 @@ impl<'a, T> HasScope for MaybeJustifiedOccurrence<'a, T> {
   }
 }
 
-impl<'a, T> HasScope for AppOccurrence<'a, T> {
+impl<T> HasScope for AppOccurrence<T> {
   fn scope(&self) -> Scope { Scope::Internal }
 }
 
@@ -166,7 +168,7 @@ impl<X:HasScope,Y:HasScope> HasScope for Generalized<X,Y> {
   }
 }
 
-impl<'a, T> HasScope for Occurrence<'a, T> {
+impl<T> HasScope for Occurrence<T> {
   fn scope(&self) -> Scope {
     match &self {
       TermBranching::App(a) => a.scope(),
@@ -184,16 +186,15 @@ struct PviewIteration<'a, T> {
 
 /// Iterate backward over the P-view of a justified sequence
 impl<'a, T> Iterator for PviewIteration<'a, T> {
-  type Item = (Occurrence<'a, T>, usize);
+  type Item = (&'a Occurrence<T>, usize);
 
-  fn next(&mut self) -> Option<(Occurrence<'a, T>, usize)> {
-    let i = self.current_pos;
+  fn next(&mut self) -> Option<(&'a Occurrence<T>, usize)> {
+    let i :i32 = self.current_pos as i32;
 
     if i>=0 {
-      let lastOccurrence = &self.t[i];
-
+      let last_occurrence: &Occurrence<T> = &self.t[i as usize];
       let k =
-        match lastOccurrence {
+        match last_occurrence {
           TermBranching::Var(_) | TermBranching::App(_)
             => 1,
 
@@ -209,7 +210,8 @@ impl<'a, T> Iterator for PviewIteration<'a, T> {
         };
 
       self.current_pos -= k;
-      Some ((*lastOccurrence, k))
+
+      Some ((last_occurrence, k))
     } else {
       None
     }
@@ -230,17 +232,17 @@ trait HasArity {
 }
 
 /// Arity of an AST Var node
-impl<T> HasArity for ast::alternating::Var<T> {
+impl<T> HasArity for ast::Var<T> {
   fn arity(&self) -> usize { self.arguments.len() }
 }
 
 /// Arity of an AST node
-impl<T> HasArity for ast::alternating::Abs<T> {
+impl<T> HasArity for ast::Abs<T> {
   fn arity(&self) -> usize { self.bound_variables.len() }
 }
 
 /// Arity of an AST node
-impl<T> HasArity for ast::alternating::App<T> {
+impl<T> HasArity for ast::App<T> {
   fn arity(&self) -> usize { self.operands.len() }
 }
 
@@ -254,17 +256,17 @@ impl HasArity for GhostVarNode {
 }
 
 /// Arity of a justified occurrence
-impl<'a, T:HasArity> HasArity for JustifiedOccurrence<'a, T> {
+impl<T:HasArity> HasArity for JustifiedOccurrence<T> {
   fn arity(&self) -> usize { self.node.arity() }
 }
 
 /// Arity of a justified occurrence
-impl<'a, T:HasArity> HasArity for UnjustifiedOccurrence<'a, T> {
+impl<T:HasArity> HasArity for UnjustifiedOccurrence<T> {
   fn arity(&self) -> usize { self.node.arity() }
 }
 
 /// Arity of an optionally justified occurrence
-impl<'a, T:HasArity> HasArity for MaybeJustifiedOccurrence<'a, T> {
+impl<T:HasArity> HasArity for MaybeJustifiedOccurrence<T> {
   fn arity(&self) -> usize { self.node.arity() }
 }
 
@@ -290,13 +292,13 @@ impl<V:HasArity, L:HasArity, A:HasArity> HasArity for TermBranching<V, L, A> {
 }
 
 /// Dynamic arity of a traversal (ending with an external variable)
-fn dynamicArity<'a, T>(t: JustSeq<'a, T>) -> usize {
-  let mut i = t.len() - 1;
-  let mut sum = t[i].arity();
+fn dynamic_arity<'a, T>(t: JustSeq<'a, T>) -> usize {
+  let mut i :i32 = t.len() as i32 - 1;
+  let mut sum = t[i as usize].arity();
   let mut max = sum;
   i = i-1;
   while i >= 0 {
-    let o = &t[i];
+    let o = &t[i as usize];
     match o {
       TermBranching::Abs(_) if o.scope() == Scope::External => return max,
       TermBranching::Abs(_) => sum -= o.arity(),
@@ -311,8 +313,8 @@ fn dynamicArity<'a, T>(t: JustSeq<'a, T>) -> usize {
 }
 
 enum VarOrAppOccurrence<'a, T> {
-  VarO (VarOccurrence<'a, T>),
-  AppO (AppOccurrence<'a, T>)
+  VarO (&'a VarOccurrence<T>),
+  AppO (&'a AppOccurrence<T>)
 }
 
 /// Given an occurrence of a variable or application node, returns
@@ -323,25 +325,27 @@ enum VarOrAppOccurrence<'a, T> {
 /// - `childIndex` the index of the child node to fetch, ranging from
 ///   1 to arity(x) for a variable-node,
 ///   0 to arity(x) for an @-node.
-fn childOf<'a, T>(o: VarOrAppOccurrence<'a, T>, childIndex: usize) -> GeneralizedAbsNode<'a, T> {
+fn child_of<'a, T>(o: VarOrAppOccurrence<'a, T>, child_index: usize) -> GeneralizedAbsNode<T> {
   match o {
     VarOrAppOccurrence::VarO(Generalized::Structural(occ)) =>
-      if childIndex <= occ.arity() {
-        GeneralizedAbsNode::Structural(&occ.node.arguments[childIndex-1])
+      if child_index <= occ.arity() {
+        GeneralizedAbsNode::Structural(Rc::clone(&occ.node.arguments[child_index-1]))
       } else {
-        GeneralizedAbsNode::Ghost (&GhostAbsNode { bound_variables: [].to_vec() })
+        GeneralizedAbsNode::Ghost(Rc::new(GhostAbsNode {
+          bound_variables: Vec::new()
+        }))
       }
 
     VarOrAppOccurrence::VarO(Generalized::Ghost(_)) =>
-      GeneralizedAbsNode::Ghost (&GhostAbsNode { bound_variables: [].to_vec() }),
+      GeneralizedAbsNode::Ghost (Rc::new(GhostAbsNode { bound_variables: Vec::new() })),
 
     VarOrAppOccurrence::AppO(o) =>
-      if childIndex == 0 {
-        GeneralizedAbsNode::Structural(&o.node.operator)
-      } else if childIndex <= o.arity() {
-        GeneralizedAbsNode::Structural(&o.node.operands[childIndex-1])
+      if child_index == 0 {
+        GeneralizedAbsNode::Structural(Rc::clone(&o.node.operator))
+      } else if child_index <= o.arity() {
+        GeneralizedAbsNode::Structural(Rc::clone(&o.node.operands[child_index-1]))
       } else {
-        GeneralizedAbsNode::Ghost (&GhostAbsNode { bound_variables: [].to_vec() })
+        GeneralizedAbsNode::Ghost (Rc::new(GhostAbsNode { bound_variables: Vec::new() }))
       }
   }
 }
@@ -350,23 +354,25 @@ fn childOf<'a, T>(o: VarOrAppOccurrence<'a, T>, childIndex: usize) -> Generalize
 /// - `m` occurrence of the parent node
 /// - `childIndex` child index defining the node to create an occurrence of
 /// - `distance` distance from the occurrence of the node m in the sequence
-fn createOccurrenceOfChildOf<'a, T>(
-  m: VarOrAppOccurrence<'a, T>,
-  childIndex: usize,
+fn create_occurrence_of_child_of<T>(
+  m: VarOrAppOccurrence<T>,
+  child_index: usize,
   distance: usize
   )
-  -> JustifiedOccurrence<'a, GeneralizedAbs<&'a T>>
+  -> JustifiedOccurrence<GeneralizedAbs<T>>
 {
 
-  let s = match m {
+  let s = match &m {
     VarOrAppOccurrence::VarO (v) => v.scope(),
     VarOrAppOccurrence::AppO (a) => a.scope()
   };
 
+  let n = Rc::new(child_of(m, child_index));
+
   JustifiedOccurrence {
-    node: &childOf(m, childIndex),
+    node: n,
     j : JustificationWithScope {
-          justifier: Pointer { distance: distance, label: childIndex as i32 },
+          justifier: Pointer { distance: distance, label: child_index as i32 },
           scope: s // has same scope as parent node
         }
     }
@@ -375,16 +381,17 @@ fn createOccurrenceOfChildOf<'a, T>(
 /// Return the list of possible occurrences opening up a new strand
 /// in a strand-complete traversal
 /// Returns void if the traversal is maximal
-fn newStrandOpeningOccurrences<'a, T>(
-  t: JustSeq<T>,
-  lastOccurrence: VarOccurrence<'a, T>
-) -> Vec<JustifiedOccurrence<'a, GeneralizedAbs<T>>> {
-  let da = dynamicArity(t);
+fn new_strand_opening_occurrences<'a, T>(
+  t: JustSeq<'a, T>,
+  last_occurrence: VarOccurrence<T>
+)  -> Vec<JustifiedOccurrence<GeneralizedAbs<T>>>
+{
+  let da = dynamic_arity(t);
   let range = 1..(da+1);
-  let possibleChildren =
-      range.map(|i| createOccurrenceOfChildOf(VarOrAppOccurrence::VarO(lastOccurrence), i, 1)).collect();
+  let possible_children =
+      range.map(move |i| create_occurrence_of_child_of(VarOrAppOccurrence::VarO(&last_occurrence), i, 1)).collect();
 
-  possibleChildren
+  possible_children
 }
 
 /*
@@ -518,7 +525,7 @@ fn extendTraversal<T>(
           // Occurrence `m` from the paper, is the node preceding the variable occurrence's justifier.
           // Type assertion: by construction traversal verify alternation therefore m is necessarily a variable occurrence
           let m = t[nextIndex - distance] as VarOccurrence<T> | AppOccurrence<T>
-          createOccurrenceOfChildOf(m, lastOccurrence.justifier.label, distance)
+          create_occurrence_of_child_of(m, lastOccurrence.justifier.label, distance)
         } else { /// external variable
           newStrandOpeningOccurrences(t, lastOccurrence)
         },
@@ -682,7 +689,7 @@ fn enumerateAllTraversals<T>(
     verbose && console.log(indentLog + "|Depth:" + depth + "|External variable reached with " + next.length + " branch(es):" + printSequence(t, freeVariableIndices))
     for (let o of next) {
       let t2: JustSeq<T> = t.concat(o)
-      verbose && console.log(indentLog + "|Depth:" + depth + "|Choice:" + o.justifier.label + "|Trav: " + printSequence(t, freeVariableIndices) + " |Occurrence: " + printOccurrence(t2, o, t.length, freeVariableIndices))
+      verbose && console.log(indentLog + "|Depth:" + depth + "|Choice:" + o.justifier.label + "|Traversal: " + printSequence(t, freeVariableIndices) + " |Occurrence: " + printOccurrence(t2, o, t.length, freeVariableIndices))
       enumerateAllTraversals(findBinder, treeRoot, t2, freeVariableIndices, depth+1)
     }
   } else {
@@ -735,9 +742,9 @@ fn evaluateAndReadout<T extends NameLookup>(
 
     let argumentOccurrences = newStrandOpeningOccurrences(t, strandEndVar)
     if (argumentOccurrences.length == 0) {
-      verbose && console.log("Strand ended|Maximal    |Depth:" + depth + "|Trav: " + printSequence(t, freeVariableIndices))
+      verbose && console.log("Strand ended|Maximal    |Depth:" + depth + "|Traversal: " + printSequence(t, freeVariableIndices))
     } else {
-      verbose && console.log("Strand ended|Not maximal|Depth:" + depth + "|Trav: " + printSequence(t, freeVariableIndices))
+      verbose && console.log("Strand ended|Not maximal|Depth:" + depth + "|Traversal: " + printSequence(t, freeVariableIndices))
     }
 
     return {
