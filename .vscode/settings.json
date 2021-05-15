@@ -4,6 +4,7 @@
         "arity",
         "bracketize",
         "combinators",
+        "concat",
         "lalrpop",
         "lambdaterms",
         "pview",
