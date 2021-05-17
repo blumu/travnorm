@@ -126,12 +126,7 @@ pub mod alternating_rc {
     Var( Rc<Var<T>> )
   }
 
-  #[derive(Clone)]
-  pub enum Term<T> {
-    Var (Var<T>),
-    App (App<T>),
-    Abs (Abs<T>)
-  }
+  pub type Term<T> = Abs<T>;
 
   pub type LambdaTerm = Term<String>;
 

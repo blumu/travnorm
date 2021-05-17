@@ -1,9 +1,9 @@
 /// Traversing lambda terms in Rust
 /// William Blum, May 2021
 ///
-//use crate::ast::{LmdTerm};
-use crate::travnorm::TermBranching::{Abs, Var, App};
-use crate::travnorm::Generalized::{Structural, Ghost};
+
+use crate::traversal::TermBranching::{Abs, Var, App};
+use crate::traversal::Generalized::{Structural, Ghost};
 
 use crate::ast::{ alternating_rc as ast, Identifier };
 use std::cmp;
@@ -41,6 +41,7 @@ enum Generalized<S, G> {
 /// - a structural lambda node
 /// - a ghost lambda  node
 type GeneralizedAbsNode<T> = Generalized<Rc<ast::Abs<T>>, Rc<GhostAbsNode>>;
+
 
 /// A justification pointer
 #[derive(Clone, Copy)]
@@ -129,14 +130,15 @@ type Occurrence<T> = TermBranching<VarOccurrence<T>, AbsOccurrence<T>, AppOccurr
 /// A justified sequence of node occurrences
 type JustSeq<T> = Vec<Occurrence<T>>;
 
-/// Occurrence of structural nodes
-//type StructuralOccurrence<T> = TermBranching<JustifiedOccurrence<ast::Var<T>>, MaybeJustifiedOccurrence<ast::Abs<T>>, AppOccurrence<T>>;
-
-
 enum Extension<T> {
     None,
     Single(Occurrence<T>),
-    Choice(Vec<JustifiedOccurrence<GeneralizedAbsNode<T>>>)
+    ChoiceOfLambdas(Vec<AbsOccurrence<T>>)
+}
+
+
+trait MayHavePointer {
+   fn may_pointer(&self) -> Option<Pointer>;
 }
 
 trait HasPointer {
@@ -151,6 +153,39 @@ impl<S, G> HasPointer for Generalized<JustifiedOccurrence<S>, JustifiedOccurrenc
     }
   }
 }
+
+impl<S> MayHavePointer for JustifiedOccurrence<S> {
+  fn may_pointer(&self) -> Option<Pointer> {
+    Some(self.j.pointer)
+  }
+}
+
+impl<S> MayHavePointer for MaybeJustifiedOccurrence<S> {
+  fn may_pointer(&self) -> Option<Pointer> {
+    self.j.map(|j| j.pointer)
+  }
+}
+
+
+impl<S : MayHavePointer, G: MayHavePointer> MayHavePointer for Generalized<S, G> {
+  fn may_pointer(&self) -> Option<Pointer> {
+    match self {
+      Structural(s) => s.may_pointer(),
+      Ghost(g) => g.may_pointer(),
+    }
+  }
+}
+
+impl<V : MayHavePointer, L: MayHavePointer, A: MayHavePointer> MayHavePointer for TermBranching<V, L, A> {
+  fn may_pointer(&self) -> Option<Pointer> {
+    match self {
+      Var(v) => v.may_pointer(),
+      Abs(l) => l.may_pointer(),
+      App(a) => a.may_pointer(),
+    }
+  }
+}
+
 
 trait HasScope {
    fn scope(&self) -> Scope;
@@ -206,7 +241,7 @@ impl<'a, T: Clone> Iterator for PviewIteration<'a, T> {
     let i = self.current_pos;
 
     if i>=0 {
-      let last_occurrence : Occurrence<T> = self.t[i as usize];
+      let last_occurrence : &Occurrence<T> = &self.t[i as usize];
       let k =
         match last_occurrence {
           TermBranching::Var(_) | TermBranching::App(_)
@@ -340,17 +375,12 @@ impl<T> OnTheFlyChildren<GeneralizedAbsNode<T>> for VarOccurrence<T> {
   ///   1 to arity(x) for a variable-node,
   fn get_or_create_child(&self, child_index: usize) -> GeneralizedAbsNode<T> {
     match &self {
-      Generalized::Structural(occ) =>
-        if child_index <= occ.arity() {
-          GeneralizedAbsNode::Structural(Rc::clone(&occ.node.arguments[child_index-1]))
-        } else {
-          GeneralizedAbsNode::Ghost(Rc::new(GhostAbsNode {
-            bound_variables: Vec::new()
-          }))
-        }
+      Generalized::Structural(occ) if child_index <= occ.arity() =>
+        Generalized::Structural(Rc::clone(&occ.node.arguments[child_index-1])),
 
+      Generalized::Structural(_) |
       Generalized::Ghost(_) =>
-        GeneralizedAbsNode::Ghost (Rc::new(GhostAbsNode { bound_variables: Vec::new() })),
+        Generalized::Ghost (Rc::new(GhostAbsNode { bound_variables: Vec::new() })),
     }
   }
 }
@@ -363,34 +393,49 @@ impl<T> OnTheFlyChildren<GeneralizedAbsNode<T>> for AppOccurrence<T> {
   ///   0 to arity(x) for an @-node.///
   fn get_or_create_child(&self, child_index: usize) -> GeneralizedAbsNode<T> {
     if child_index == 0 {
-      GeneralizedAbsNode::Structural(Rc::clone(&self.node.operator))
+      Generalized::Structural(Rc::clone(&self.node.operator))
     } else if child_index <= self.arity() {
-      GeneralizedAbsNode::Structural(Rc::clone(&self.node.operands[child_index-1]))
+      Generalized::Structural(Rc::clone(&self.node.operands[child_index-1]))
     } else {
-      GeneralizedAbsNode::Ghost (Rc::new(GhostAbsNode { bound_variables: Vec::new() }))
+      Generalized::Ghost (Rc::new(GhostAbsNode { bound_variables: Vec::new() }))
     }
   }
 }
 
-/// Create an occurrence of a child node of a given node occurrence
+/// Create an occurrence of a child node of a given @/var node occurrence
 /// Arguments
-/// - `m` occurrence of the parent node
-/// - `childIndex` child index defining the node to create an occurrence of
-/// - `distance` distance from the occurrence of the node m in the sequence
+/// - `m` occurrence of the parent @ or variable node
+/// - `child_index` child index defining the node to create an occurrence of
+/// - `distance` distance from the created occurrence to the occurrence `m` in the underlying sequence
 fn create_occurrence_of_child_of<O : OnTheFlyChildren<GeneralizedAbsNode<T>> + HasScope, T>(
   m: &O,
   child_index: usize,
   distance: usize
   )
-  -> JustifiedOccurrence<GeneralizedAbsNode<T>>
+  -> AbsOccurrence<T>
 {
-  JustifiedOccurrence {
-    node: Rc::new(m.get_or_create_child(child_index) ),
-    j : JustificationWithScope {
+  match m.get_or_create_child(child_index) {
+    Generalized::Structural(s) =>
+      Structural(MaybeJustifiedOccurrence{
+        node: Rc::clone(&s),
+        j : Some(JustificationWithScope {
           pointer: Pointer { distance: distance, label: child_index as i32 },
           scope: m.scope() // has same scope as parent node
-        }
-    }
+        })
+      })
+    ,
+    Generalized::Ghost(g) =>
+      Ghost(
+        JustifiedOccurrence {
+        node: Rc::clone(&g),
+        j : JustificationWithScope {
+              pointer: Pointer { distance: distance, label: child_index as i32 },
+              scope: m.scope() // has same scope as parent node
+            }
+        }),
+  }
+
+
 }
 
 ////////// Traversals
@@ -407,13 +452,13 @@ trait BinderLocator<Name> {
   fn locate<'a> (
     reference_to_variable_name : &Name,
     pview: PviewIteration<'a, Name>,
-    free_variable_indices: &Vec<Identifier>) -> Pointer;
+    free_variable_indices: &mut Vec<Identifier>) -> Pointer;
 
 }
 
 /// lookup the index assigned to a free variable, or create one if it is not defined yet
 fn lookup_or_create_free_variable_index(
-  free_variable_indices: &Vec<Identifier>,
+  free_variable_indices: &mut Vec<Identifier>,
   variable_name: &Identifier) -> usize {
 
   match free_variable_indices.iter().position(|v| v == variable_name) {
@@ -441,7 +486,7 @@ impl BinderLocator<Identifier> for Identifier {
   fn locate<'a> (
     variable_name:&Identifier,
     pview: PviewIteration<'a, Identifier>,
-    free_variable_indices: &Vec<Identifier>
+    free_variable_indices: &mut Vec<Identifier>
   ) -> Pointer {
     // read the P-view backward and stop at the first binder containing the variable name
     let mut d = 1;
@@ -483,34 +528,32 @@ impl BinderLocator<Identifier> for Identifier {
 ///
 /// Arguments:
 ///   - `t` the current traversal
-///   - `treeRoot` the root of the term tree
+///   - `tree_root` the root of the term tree
 ///   - `free_variable_indices` vector with names of newly created free variables
-fn extend_traversal<T : BinderLocator<T>>(
-  treeRoot: &ast::Abs<T>,
+fn extend_traversal<T : Clone + BinderLocator<T>>(
+  tree_root: &ast::Abs<T>,
   t: &JustSeq<T>,
-  free_variable_indices: &Vec<Identifier>
+  free_variable_indices: &mut Vec<Identifier>
 ) -> Extension<T>
 {
   if t.is_empty() { // Empty sequence?
-    Extension::Single(
-      TermBranching::Abs(
+    Extension::Single(Abs(
         Generalized::Structural(
           MaybeJustifiedOccurrence {
-            node: Rc::new(*treeRoot),
+            node: Rc::new(tree_root.clone()),
             j : None,
           })))
   } else {
-    let nextIndex = t.len();
-    let lastIndex = nextIndex-1;
-    let last_occurrence :&Occurrence<T> = &t[lastIndex];
+    let next_index = t.len();
+    let last_index = next_index-1;
+    let last_occurrence :&Occurrence<T> = &t[last_index];
     match last_occurrence {
       App(app) =>
 
-        Extension::Single(
-          TermBranching::Abs(
+        Extension::Single(Abs(
             Generalized::Structural(
               MaybeJustifiedOccurrence {
-                node: app.node.operator, // traverse the operator node
+                node: app.node.operator.clone(), // traverse the operator node
                 j : Some(JustificationWithScope {
                   pointer : Pointer { distance:1, label: 0 },
                   scope: Scope::Internal
@@ -518,7 +561,7 @@ fn extend_traversal<T : BinderLocator<T>>(
               }
           ))),
 
-      Var(var) if last_occurrence.scope() == Scope::Internal =>{
+      Var(var) if last_occurrence.scope() == Scope::Internal => {
           // (Var) copy-cat rule
           let just = &var.pointer();
           let child_index = just.label as usize;
@@ -526,33 +569,24 @@ fn extend_traversal<T : BinderLocator<T>>(
 
           // Occurrence `m` from the paper, is the node preceding the variable occurrence's justifier.
           // Type assertion: by construction traversal verify alternation therefore m is necessarily a variable occurrence
-          let m = t[nextIndex - distance];
+          let m = &t[next_index - distance];
 
           let jo = match m {
-            TermBranching::App(m_a) => { create_occurrence_of_child_of(&m_a, child_index, distance) },
-            TermBranching::Var(m_v) => { create_occurrence_of_child_of(&m_v, child_index, distance) },
-            TermBranching::Abs(m_a) => panic!("Impossible: a variable's justifier predecessor cannot be an abstraction node occurrence."),
+            TermBranching::App(m_a) => { create_occurrence_of_child_of(m_a, child_index, distance) },
+            TermBranching::Var(m_v) => { create_occurrence_of_child_of(m_v, child_index, distance) },
+            TermBranching::Abs(_) => panic!("Impossible: a variable's justifier predecessor cannot be an abstraction node occurrence."),
           };
 
-          let a = match jo {
-            JustifiedOccurrence { node: n, j: j} =>
-              match *n {
-                  Generalized::Structural(ns) => Generalized::Structural(MaybeJustifiedOccurrence{node: ns, j: Some(j)}),
-                  Generalized::Ghost(ng) => Generalized::Ghost(JustifiedOccurrence{node: ng, j: j})
-              }
-          };
-
-          Extension::Single(TermBranching::Abs(a))
+          Extension::Single(Abs(jo))
       }
 
-      Var(v) => // external variable
-      {
+      Var(v) => { // external variable
           // Get the list of possible occurrences opening up a new strand
           // in a strand-complete traversal
           // (empty if the traversal is maximal)
           let da = dynamic_arity(t);
           let range = 1..(da+1);
-          let possible_children : Vec<JustifiedOccurrence<_>> =
+          let possible_children : Vec<AbsOccurrence<_>> =
               range
               .map(move |i| create_occurrence_of_child_of(v, i, 1))
               .collect();
@@ -560,14 +594,14 @@ fn extend_traversal<T : BinderLocator<T>>(
           if possible_children.is_empty() {
             Extension::None
           } else {
-            Extension::Choice(possible_children)
+            Extension::ChoiceOfLambdas(possible_children)
           }
       }
 
       Abs(Generalized::Structural(abs_node)) => {
-          let bodyNode = abs_node.node.body;
+          let body_node = &abs_node.node.body;
           // traverse the body of the lambda
-          match &bodyNode {
+          match &body_node {
             ast::AppOrVar::App(body_app) =>
               Extension::Single(App(UnjustifiedOccurrence {
                     node: Rc::clone(body_app),
@@ -575,10 +609,10 @@ fn extend_traversal<T : BinderLocator<T>>(
 
             ast::AppOrVar::Var(body_var) => {
               let p = pview(t);
-              let n = body_var.name;
-              let pointer = T::locate(&n, p, free_variable_indices);
+              let n = &body_var.name;
+              let pointer = T::locate(n, p, free_variable_indices);
 
-              let m = &t[nextIndex - pointer.distance]; // if d= 1 then the justifier is the last occurrence
+              let m = &t[next_index - pointer.distance]; // if d= 1 then the justifier is the last occurrence
 
               Extension::Single(Var(Generalized::Structural(
                 JustifiedOccurrence {
@@ -596,21 +630,20 @@ fn extend_traversal<T : BinderLocator<T>>(
 
       Abs(Generalized::Ghost(g)) => {
         // Traverse the child of the ghost lambda node
-        //let m = t[lastIndex-last_occurrence.justifier.distance];
+        //let m = t[last_index-last_occurrence.justifier.distance];
         let d = g.j.pointer.distance;
-        let m = t[lastIndex-d];
+        let m = &t[last_index-d];
 
-        let justifierDistance = d + 2;
-        let mu = t[nextIndex - justifierDistance];
+        let justifier_distance = d + 2;
+        let mu = &t[next_index - justifier_distance];
         let i = g.j.pointer.label;
-        VERY_VERBOSE && println!("[GhostAbs-arity] m: {}, mu: {}, i: {}", m.arity(), mu.arity(), i);
-        Extension::Single(
-          Var(
+        if VERY_VERBOSE { println!("[GhostAbs-arity] m: {}, mu: {}, i: {}", m.arity(), mu.arity(), i); };
+        Extension::Single(Var(
             Generalized::Ghost(
               JustifiedOccurrence {
                 node: Rc::new(GhostVarNode{}),
                 j : JustificationWithScope {
-                  pointer : Pointer { distance: justifierDistance,
+                  pointer : Pointer { distance: justifier_distance,
                                         label: mu.arity() as i32 + i - m.arity() as i32 },
                   scope: mu.scope()
                 }
@@ -628,7 +661,7 @@ fn format_pointer(p: &Pointer) -> String {
   format!("({},{})", p.distance, p.label)
 }
 
-fn as_string_list<T:ToString>(v:Vec<T>) -> Vec<String> {
+fn as_string_list<T:ToString>(v:&Vec<T>) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
@@ -644,13 +677,13 @@ fn format_occurrence<T : ToString>(
    free_variable_indices: &[Identifier])
 -> String
 {
-  let o = t[index];
+  let o = &t[index];
   match o {
-    TermBranching::Abs(Generalized::Structural(MaybeJustifiedOccurrence{ j : None, node : node })) =>
-      format!("[{}]",as_string_list(node.bound_variables).join(" ")),
+    TermBranching::Abs(Generalized::Structural(MaybeJustifiedOccurrence{ j : None, node })) =>
+      format!("[{}]",as_string_list(&node.bound_variables).join(" ")),
 
-    TermBranching::Abs(Generalized::Structural(MaybeJustifiedOccurrence{ j : Some(j), node : node })) =>
-      format!("[{}]{}", as_string_list(node.bound_variables).join(" "), format_pointer(&j.pointer)),
+    TermBranching::Abs(Generalized::Structural(MaybeJustifiedOccurrence{ j : Some(j), node })) =>
+      format!("[{}]{}", as_string_list(&node.bound_variables).join(" "), format_pointer(&j.pointer)),
 
     TermBranching::Abs(Generalized::Ghost(jo)) =>
       format!("$[{:?}]{:?}", jo.node.bound_variables, format_pointer(&jo.j.pointer)),
@@ -663,16 +696,16 @@ fn format_occurrence<T : ToString>(
       match justifier {
         App(_) | Var(_) => panic!("A variable's justifier can only be an occurrence of a lambda node."),
 
-        Abs(Generalized::Ghost(jo)) => panic!("A structural variable can only be justified by a structural lambda node."),
+        Abs(Generalized::Ghost(_)) => panic!("A structural variable can only be justified by a structural lambda node."),
 
         Abs(Generalized::Structural(jo)) => {
-          let justifier_bound_variables = jo.node.bound_variables;
+          let justifier_bound_variables = &jo.node.bound_variables;
           let l = pointer.label as usize;
           let name =
             if l <= justifier_bound_variables.len() {
               justifier_bound_variables[l - 1].to_string()
             } else {
-              free_variable_indices[(l - 1 - justifier_bound_variables.len()) as usize]
+              free_variable_indices[(l - 1 - justifier_bound_variables.len()) as usize].clone()
             };
           name + &format_pointer(pointer)
         }
@@ -692,7 +725,7 @@ fn format_sequence<T: ToString>(
   let occ : Vec<String>=
     t.iter()
      .enumerate()
-     .map(|(i, o)| format_occurrence(t, i, free_variable_indices))
+     .map(|(i, _)| format_occurrence(t, i, free_variable_indices))
      .collect();
 
   occ.join("--")
@@ -712,93 +745,96 @@ struct CoreProjection<'a, T> {
 impl<'a, T : Clone> Iterator for CoreProjection<'a, T> {
   type Item = Occurrence<T>;
 
-  fn next(&mut self) -> Option<Occurrence<T>> {
-    let i = self.position;
-    let o = &self.t[i];
-    match o {
-      Abs(o_a) if o_a.scope() == Scope::External => {
+  fn next(&mut self) -> Option<Self::Item> {
+    loop {
+      let i = self.position;
+      if i == 0 { return None
+      }
 
-        let clone_occurrence = match o_a {
-           Generalized::Ghost(g) => {
-              Generalized::Ghost(
-                JustifiedOccurrence{
-                    j : g.j,
-                    node : Rc::new(GhostAbsNode{
+      self.position -= 1;
+      let o = &self.t[i];
+      match o {
+        Abs(o_a) if o_a.scope() == Scope::External => {
+
+          let clone_occurrence = match o_a {
+            Generalized::Ghost(g) => {
+                Generalized::Ghost(
+                  JustifiedOccurrence{
+                      j : g.j,
+                      node : Rc::new(GhostAbsNode{
+                          // unload the pending lambdas onto the node occurrence
+                          bound_variables : [ &g.node.bound_variables[..], &self.pending_lambdas[..]].concat(),
+                        }),
+                      })
+            },
+            Generalized::Structural(s) => {
+                Generalized::Structural(
+                  MaybeJustifiedOccurrence{
+                      j : s.j,
+                      node : Rc::new(ast::Abs{
                         // unload the pending lambdas onto the node occurrence
-                        bound_variables : [ g.node.bound_variables, self.pending_lambdas].concat(),
-                      }),
-                    })
-           },
-           Generalized::Structural(s) => {
-              Generalized::Structural(
-                MaybeJustifiedOccurrence{
-                    j : s.j,
-                    node : Rc::new(ast::Abs{
-                      // unload the pending lambdas onto the node occurrence
-                      bound_variables : [ s.node.bound_variables, self.pending_lambdas].concat(),
-                      body : s.node.body
-                    })
-                })
+                        bound_variables : [ &s.node.bound_variables[..], &self.pending_lambdas[..]].concat(),
+                        body : s.node.body.clone()
+                      })
+                  })
+            }
+          };
+
+          self.pending_lambdas.truncate(0);
+
+          return Some(Abs(clone_occurrence))
+        },
+
+        Abs(Generalized::Structural(a)) => {
+          self.pending_lambdas = [ &a.node.bound_variables[..], &self.pending_lambdas[..]].concat();
+        },
+
+        Abs(Generalized::Ghost(a)) => {
+          self.pending_lambdas = [ &a.node.bound_variables[..], &self.pending_lambdas[..]].concat();
+        },
+
+        Var(v) if v.scope() == Scope::External => {
+          // patch link distance to account for the removed occurrences (underneath the pointer)
+          let mut d = v.pointer().distance;
+          for j in (i-d)..i {
+            if self.t[j].scope() == Scope::Internal {
+              d -= 1
+            }
           }
-         };
 
-         self.pending_lambdas.truncate(0);
+          let cloned_occurrence = match v {
+            Structural(s) => {
+              Structural(
+                JustifiedOccurrence {
+                    j : JustificationWithScope {
+                      pointer: Pointer { distance: d, label: s.j.pointer.label },
+                      scope: s.j.scope
+                    },
+                  node : Rc::clone(&s.node)
+                })
+            },
+            Ghost(g) => {
+              Ghost(
+                JustifiedOccurrence {
+                    j : JustificationWithScope {
+                      pointer: Pointer { distance: d, label: g.j.pointer.label },
+                      scope: g.j.scope
+                    },
+                  node : g.node.clone()
+                })
+            }
+          };
 
-         Some(Abs(clone_occurrence))
-      },
+          self.pending_lambdas.truncate(0);
 
-      Abs(Generalized::Structural(a)) => {
-         self.pending_lambdas = [ a.node.bound_variables, self.pending_lambdas].concat();
-         None
-      },
+          return Some (Var(cloned_occurrence))
+        },
 
-      Abs(Generalized::Ghost(a)) => {
-        self.pending_lambdas = [ a.node.bound_variables, self.pending_lambdas].concat();
-         None
-      },
-
-      Var(v) if v.scope() == Scope::External => {
-         // patch link distance to account for the removed occurrences (underneath the pointer)
-         let d = v.pointer().distance;
-         for j in (i-d)..i {
-           if self.t[j].scope() == Scope::Internal {
-             d -= 1
-           }
-         }
-
-         let cloned_occurrence = match v {
-           Structural(s) => {
-            Structural(
-              JustifiedOccurrence {
-                  j : JustificationWithScope {
-                    pointer: Pointer { distance: d, label: s.j.pointer.label },
-                    scope: s.j.scope
-                  },
-                node : s.node
-              })
-           },
-           Ghost(g) => {
-            Ghost(
-              JustifiedOccurrence {
-                  j : JustificationWithScope {
-                    pointer: Pointer { distance: d, label: g.j.pointer.label },
-                    scope: g.j.scope
-                  },
-                node : g.node
-              })
-           }
-         };
-
-         self.pending_lambdas.truncate(0);
-
-         Some (Var(cloned_occurrence))
-      },
-
-      Var(_) | App(_) => {
-        // pop arity(o) elements from the left of the array
-        let (left, right) = self.pending_lambdas.split_at(o.arity());
-        self.pending_lambdas = right.to_vec();
-        None
+        Var(_) | App(_) => {
+          // pop arity(o) elements from the left of the array
+          let (_, right) = self.pending_lambdas.split_at(o.arity());
+          self.pending_lambdas = right.to_vec();
+        }
       }
     }
   }
@@ -809,7 +845,7 @@ fn core_projection<T>(t: &JustSeq<T>) -> CoreProjection<T> {
   CoreProjection {
     pending_lambdas : Vec::new(),
     t : t,
-    position : t.len()-1 // start calculating from the right
+    position : t.len() // start calculating from the right
   }
 }
 
@@ -817,84 +853,106 @@ fn core_projection<T>(t: &JustSeq<T>) -> CoreProjection<T> {
 ///
 /// Arguments:
 ///   - `t` the current traversal
-///   - `treeRoot` the root of the term tree
+///   - `tree_root` the root of the term tree
 ///   - `free_variable_indices` the indices of all free variables
 /// Returns an array of all possible next strands, or an empty vector
 /// if the input traversal is complete
-pub fn traverse_next_strand<T : BinderLocator<T>>(
-  treeRoot:&ast::Abs<T>,
-  t:&JustSeq<T>,
-  free_variable_indices: &Vec<String>
+fn traverse_next_strand<T : Clone + ToString + BinderLocator<T>>(
+  tree_root:&ast::Abs<T>,
+  t:&mut JustSeq<T>,
+  free_variable_indices: &mut Vec<String>
 ) -> Extension<T>
  {
 
-  let next = extend_traversal(treeRoot, t, free_variable_indices);
+  let mut next = extend_traversal(tree_root, t, free_variable_indices);
 
   while let Extension::Single(o) = next {
     t.push(o); // append the traversed occurrence
     if VERY_VERBOSE {
       println!("extended: {}", format_sequence(t, free_variable_indices))
     }
-    next = extend_traversal(treeRoot, t, free_variable_indices)
+    next = extend_traversal(tree_root, t, free_variable_indices)
   }
 
   return next
 }
 
-fn enumerate_all_traversals<T:BinderLocator<T>>(
-  treeRoot: &ast::Abs<T>,
-  t: &JustSeq<T>,
-  free_variable_indices: &Vec<Identifier>,
+fn enumerate_all_traversals<T: Clone + ToString + BinderLocator<T>>(
+  tree_root: &ast::Abs<T>,
+  t: &mut JustSeq<T>,
+  free_variable_indices: &mut Vec<Identifier>,
   depth:usize
 ) {
 
-  let indentLog = "  ".repeat(depth);
+  let log_indent = "  ".repeat(depth);
 
-  let next = traverse_next_strand(treeRoot, t, free_variable_indices);
+  let next = traverse_next_strand(tree_root, t, free_variable_indices);
 
-  let node_choices =
-    match next {
-      Extension::None => {
-        println!("{}|Depth:{}|Maximal traversal:{}",
-            indentLog,
-            depth,
-            format_sequence(t, free_variable_indices));
-        let p = core_projection(t).iter().rev().collect();
-        println!("{}|      {}        projection:{}",
-            indentLog,
-            " ".repeat(depth.to_string().len()),
-            format_sequence(p, free_variable_indices));
-        return;
-      },
+  match next {
+    Extension::None => {
+      println!("{}|Depth:{}|Maximal traversal:{}",
+          log_indent,
+          depth,
+          format_sequence(t, free_variable_indices));
 
-      // external variable with single choice
-      Extension::Single(s) => [s],
+      let mut p : Vec<Occurrence<T>> = core_projection(t).collect();
+      p.reverse();
 
-      // external variable with multiple non-deterministic choices
-      Extension::Choice(node_choices) => node_choices
-    };
+      println!("{}|      {}        projection:{}",
+          log_indent,
+          " ".repeat(depth.to_string().len()),
+          format_sequence(&p, free_variable_indices));
+      return;
+    },
 
-  VERBOSE && println!("{}|Depth:{}|External variable reached with {} branch(es): {}",
-    indentLog,
-    depth,
-    node_choices.len(),
-    format_sequence(t, free_variable_indices));
+    // traversing the root node, or the single child lambda node of an external variable node
+    Extension::Single(o) => {
+      if VERBOSE { println!("{}|Depth:{}|External variable reached with single choice: {}",
+        log_indent,
+        depth,
+        format_sequence(t, free_variable_indices)) };
 
-  for o in node_choices {
-    let t2: JustSeq<T> = t.append(o);
-    VERBOSE && println!("{}|Depth:{}|Choice:{}|Traversal: {}|Occurrence: {}",
-      indentLog, depth, o.justifier.label,
-      format_sequence(t, free_variable_indices),
-      format_occurrence(t2, t.len(), free_variable_indices));
-    enumerate_all_traversals(treeRoot, t2, free_variable_indices, depth+1)
-  }
+      let mut t2: JustSeq<T> = t.clone();
+      t2.push(o);
+
+      if VERBOSE { println!("{}|Depth:{}|Traversal: {}|Occurrence: {}",
+        log_indent, depth,
+        format_sequence(t, free_variable_indices),
+        format_occurrence(&t2, t.len(), free_variable_indices)) };
+
+      enumerate_all_traversals(tree_root, &mut t2, free_variable_indices, depth+1)
+
+    },
+
+    // previous occurrence is an external variable with multiple non-deterministic choices
+    // of children lambda nodes for the next occurrence
+    Extension::ChoiceOfLambdas(node_occurrence_choices) => {
+      if VERBOSE { println!("{}|Depth:{}|External variable reached with {} branch(es): {}",
+        log_indent,
+        depth,
+        node_occurrence_choices.len(),
+        format_sequence(t, free_variable_indices)) };
+
+      for o in node_occurrence_choices {
+        let mut t2: JustSeq<T> = t.clone();
+        let label = o.may_pointer().unwrap().label;
+        t2.push(Abs(o));
+        if VERBOSE { println!("{}|Depth:{}|Choice:{}|Traversal: {}|Occurrence: {}",
+          log_indent, depth,
+          label, // node_occurrence_choices all have a pointer
+          format_sequence(t, free_variable_indices),
+          format_occurrence(&t2, t.len(), free_variable_indices));
+        enumerate_all_traversals(tree_root, &mut t2, free_variable_indices, depth+1) }
+      }
+    }
+  };
 
 }
 
 
 /// A binder is defined by the list of identifier that it binds
 struct Binder {
-   boundVariables : Vec<Identifier>
+   bound_variables : Vec<Identifier>
 }
 
 /// To support pretty-printing, the type T must implement name lookup
@@ -904,125 +962,135 @@ trait NameLookup {
   // If the variable is free then the map
   // 'free_variable_indices' can be used to lookup a free variable name from its 'free variable index'
   fn lookup(
-    bindersFromRoot: [Binder],
+    &self,
+    binders_from_root: &[Binder],
     free_variable_indices: &[Identifier], // read-only
-    withEncoding: bool // if true then pretty-print the variable name encoding itself as well as the variable name
+    with_encoding: bool // if true then pretty-print the variable name encoding itself as well as the variable name
   )-> String;
+}
+
+
+impl NameLookup for String {
+  fn lookup(
+    &self,
+    _: &[Binder],
+    _: &[Identifier],
+    _: bool
+  ) -> String {
+    // The name of the variable occurrence is just name identifier itself!
+    self.to_string()
+  }
 }
 
 
 /// Pretty-printing helper type
 struct Pretty {
-  prettyPrint: String,
-  mustBracketIfArgument: bool
+  pretty_printed: String,
+  must_bracket_if_argument: bool
 }
 
 fn bracketize(t: Pretty) -> String {
-  if t.mustBracketIfArgument { format!("({})", t.prettyPrint) } else { t.prettyPrint }
+  if t.must_bracket_if_argument { format!("({})", t.pretty_printed) } else { t.pretty_printed }
 }
 
+/*
 fn printLambdaTerm<T : NameLookup>(
-  r: ast::Abs<T>,
+  r: &ast::Term<T>,
   // print variable name reference encoding in addition to resolved names
   withEncoding: bool,
   // optional array use to assign indices to free variables (used with the deBruijn encoding)
   freeVariableIndices: &Vec<Identifier>
 ) -> Pretty {
 
-  fn printSubterm(
-    t: LambdaAST<T>,
-    bindersFromRoot: ast::Abs<T>[]
+  fn printSubterm<T : NameLookup>(
+    term: &ast::Term<T>,
+    bindersFromRoot: Vec<ast::Abs<T>>
   ) -> Pretty {
-    match (t.kind) {
-      case "Var":
-        return {
-          prettyPrint: (t.name.lookup(bindersFromRoot, freeVariableIndices, withEncoding))
-            + (t.arguments.length == 0
-              ? ""
-              : " " + t.arguments.map(x => bracketize(printSubterm(x, bindersFromRoot))).join(' ')),
-          mustBracketIfArgument: t.arguments.length > 0
-        }
-      case "App":
-        return {
-          prettyPrint: bracketize(printSubterm(t.operator, bindersFromRoot))
-            + t.operands.map(x => bracketize(printSubterm(x, bindersFromRoot))).join(' '),
-          mustBracketIfArgument: true
-        }
-      case "Abs":
-        let bodyPrint = printSubterm(t.body, bindersFromRoot.concat(t))
-        return (t.boundVariables.length == 0)
-          ? {
-            prettyPrint: bodyPrint.prettyPrint,
-            mustBracketIfArgument: bodyPrint.mustBracketIfArgument
+    match *term {
+      ast::Term::Var(v) => Pretty {
+          pretty_printed: (
+              T::lookup(bindersFromRoot, free_variable_indices, withEncoding)
+            v.name.lookup(bindersFromRoot, freeVariableIndices, withEncoding)
+                + (if v.arguments.is_empty() { "" } else {
+                   " " + v.arguments.map(|x| bracketize(printSubterm(x, bindersFromRoot))).join(" ") })),
+          must_bracket_if_argument: v.arguments.length > 0
+        },
+      ast::Term::App(app) => Pretty {
+          pretty_printed: bracketize(printSubterm(app.operator, bindersFromRoot))
+            + app.operands.map(|x| bracketize(printSubterm(x, bindersFromRoot))).join(" "),
+          must_bracket_if_argument: true
+        },
+      ast::Term::Abs(a) => {
+        let bodyPrint = printSubterm(a.body, bindersFromRoot.concat(term));
+        if a.bound_variables.is_empty() {
+          Pretty {
+            pretty_printed: bodyPrint.pretty_printed,
+            must_bracket_if_argument: bodyPrint.must_bracket_if_argument
           }
-          : {
-            prettyPrint: r"\lambda" + t.boundVariables.join(" ") + "." + bodyPrint.prettyPrint,
-            mustBracketIfArgument: true
+        } else {
+          Pretty {
+            pretty_printed: format!(r"\lambda {}.{}", a.bound_variables.join(" "), bodyPrint.pretty_printed),
+            must_bracket_if_argument: true
           }
+        }
+      }
     }
   }
-  return printSubterm(r, [])
+
+
+  return printSubterm(r, Vec::new())
 }
 
-/// Evaluate the term with term tree root treeRoot
-fn evaluate<T : NameLookup + BinderLocator>(
-  term: ast::Abs<T>
+/// Evaluate the term with term tree root tree_root
+pub fn evaluate<T : ToString + NameLookup + BinderLocator<T>>(
+  term: &ast::Term<T>
 ) {
-  println!("Traversing {}", printLambdaTerm(term, false, []).prettyPrint);
-  enumerate_all_traversals(&term, [], [], 0)
+  println!("Traversing {}", printLambdaTerm(term, false, &Vec::new()).pretty_printed);
+  enumerate_all_traversals(term, &Vec::new(), &Vec::new(), 0)
 }
-
-
-fn test () {
-  println!("===== Enumerating all traversals");
-  evaluate(neil); // <Identifier>
-}
-
 
 /// Evaluate and readout the **name-free** normal-form.
 /// This 'read-out' implementation produces an AST with DeBruijn variable references (rather than identifiers).
 /// Variable name collision can occur if pretty-printing the term by just looking up variable name
 /// without displaying the associated deBruijn pairs.
-fn evaluateAndReadout<T : NameLookup + BinderLocator>(
-  root:ast::Abs<T>,
-  free_variable_indices: &[Identifier]
+fn evaluateAndReadout<T : ToString + NameLookup + BinderLocator<T>>(
+  root:&ast::Abs<T>,
+  free_variable_indices: &Vec<Identifier>
 ) -> Vec<(ast::Abs<DeBruijnPair>, [Identifier])>
 {
-  println!("Evaluating {}", printLambdaTerm(root, false, free_variable_indices).prettyPrint);
+  println!("Evaluating {}", printLambdaTerm(root, false, free_variable_indices).pretty_printed);
 
   // Read out the subterm at ending at the last node of traversal t
-  fn readout(
+  fn readout<T : Clone>(
       // A strand-complete traversal
-      t: JustSeq<T>,
+      t: &JustSeq<T>,
       depth: u32
   ) -> ast::Abs<DeBruijnPair> {
 
-    traverse_next_strand<T>(find_binder, root, t, free_variable_indices);
+    traverse_next_strand(root, t, free_variable_indices);
 
     // get the last two nodes from the core projection
     let p = core_projection(t);
     // The strand ends with an external variable, call it x
-    let strandEndVar = p.next().value as VarOccurrence<T>;
+    let strandEndVar = p.next() as VarOccurrence<T>;
      // The strand starts with an external lambda, call it \lambda y1 .... y_n
-    let strandBeginAbs = p.next().value as AbsOccurrence<T>;
+    let strandBeginAbs = p.next() as AbsOccurrence<T>;
 
     let argumentOccurrences = newStrandOpeningOccurrences(t, strandEndVar);
-    if argumentOccurrences.length == 0 {
-      VERBOSE && console.log("Strand ended|Maximal    |Depth:" + depth + "|Traversal: " + format_sequence(t, free_variable_indices))
+    if argumentOccurrences.is_empty() {
+      VERBOSE && print!("Strand ended|Maximal    |Depth:" + depth + "|Traversal: " + format_sequence(t, free_variable_indices))
     } else {
-      VERBOSE && console.log("Strand ended|Not maximal|Depth:" + depth + "|Traversal: " + format_sequence(t, free_variable_indices))
+      VERBOSE && print!("Strand ended|Not maximal|Depth:" + depth + "|Traversal: " + format_sequence(t, free_variable_indices))
     }
 
-    {
-      kind: "Abs",
-      boundVariables: strandBeginAbs.node.boundVariables,
-      body:
+    Abs {
+      bound_variables: strandBeginAbs.node.bound_variables,
+      body: Var
         {
-          kind: "Var",
           // Since the core projection of the traversal is the path to the root (see paper),
           // the depth of the variable is precisely the distance to the justifying node in the core projection.
-          name: new DeBruijnPair(strandEndVar.justifier.distance, strandEndVar.justifier.label),
-          arguments: argumentOccurrences.map(o => readout(t.concat(o), depth+1))
+          name: DeBruijnPair(strandEndVar.justifier.distance, strandEndVar.justifier.label),
+          arguments: argumentOccurrences.map(|o| readout(t.concat(o), depth+1))
         }
     }
   }
@@ -1032,8 +1100,9 @@ fn evaluateAndReadout<T : NameLookup + BinderLocator>(
 
 fn evaluateAndPrintNormalForm(term: ast::Abs<Identifier>) {
   let (readout, free_variable_indices) = evaluateAndReadout<Identifier>(term, []);
-  println!(printLambdaTerm(readout, false, free_variable_indices).prettyPrint)
+  println!(printLambdaTerm(readout, false, free_variable_indices).pretty_printed)
 }
+*/
 
 /*
 
@@ -1068,13 +1137,13 @@ evaluateAndPrintNormalForm(varityTwo)
 /// Pretty-printing of both AST type should produce the same output
 function test(term: Abs<identifier>) {
   let [readout1, free_variable_indices1] = evaluateAndReadout(Identifier_find_binder, term, [])
-  let n1 = printLambdaTerm(readout1, true, free_variable_indices1).prettyPrint
+  let n1 = printLambdaTerm(readout1, true, free_variable_indices1).pretty_printed
   console.log("n1: " + n1)
 
   var free_variable_indices2: identifier[] = []
   var term2 = toDeBruijnAST(term, [], free_variable_indices2)
   let [readout2, _] = evaluateAndReadout(DeBruijnPair_find_binder, term2, free_variable_indices2)
-  let n2 = printLambdaTerm(readout2, true, free_variable_indices2).prettyPrint
+  let n2 = printLambdaTerm(readout2, true, free_variable_indices2).pretty_printed
   console.log("n2: " + n2)
 
   if(n1 !== n2) throw "Test failed: normalizing both AST types should give the same result"
@@ -1118,7 +1187,7 @@ function resolveNameAmbiguity (
   bindersFromRoot: (Abs<DeBruijnPair>| GhostAbsNode)[] //= []
   ) :Abs<identifier>
 {
-  let getBindingIndex = (node: Abs<DeBruijnPair> | GhostAbsNode, variableName: identifier) => node.boundVariables.indexOf(variableName)
+  let getBindingIndex = (node: Abs<DeBruijnPair> | GhostAbsNode, variableName: identifier) => node.bound_variables.indexOf(variableName)
   let isBoundByAbsNode = (node: Abs<DeBruijnPair> | GhostAbsNode, variableName: identifier) => getBindingIndex(node, variableName) >= 0
 
   function nameAlreadyUsedAbove (suggestedName:identifier, binderNameIndex:number) {
@@ -1127,7 +1196,7 @@ function resolveNameAmbiguity (
     let upperBinderNodesLookup = bindersFromRoot.findIndex(binder=> isBoundByAbsNode(binder, suggestedName))
     let nameUsedInStrictUpperBinderNodes = upperBinderNodesLookup >= 0 && upperBinderNodesLookup < bindersFromRoot.length-1
 
-    let sameBinderNodeLookup = binderNode.boundVariables.indexOf(suggestedName)
+    let sameBinderNodeLookup = binderNode.bound_variables.indexOf(suggestedName)
     let nameUsedInSameBinderNode = sameBinderNodeLookup >= 0 && sameBinderNodeLookup < binderNameIndex
 
     return freeVariableWithSameName || nameUsedInStrictUpperBinderNodes || nameUsedInSameBinderNode
@@ -1135,8 +1204,8 @@ function resolveNameAmbiguity (
 
   /// Assign permanent bound variable name to the lambda node, one at a time
   bindersFromRoot.push(binderNode)
-  for(let b = 0; b<binderNode.boundVariables.length; b++) {
-    let suggestedName = binderNode.boundVariables[b]
+  for(let b = 0; b<binderNode.bound_variables.length; b++) {
+    let suggestedName = binderNode.bound_variables[b]
     let potentialConflict = nameAlreadyUsedAbove(suggestedName, b)
     if(potentialConflict) {
       // Is there an actual conflict? I.e. is there a variable occurring below
@@ -1174,8 +1243,8 @@ function resolveNameAmbiguity (
       }
       if(hasNamingConflict(binderNode.body, 1)) {
         // resolve the conflict by renaming the bound lambda
-        let primedVariableName = binderNode.boundVariables[b]+'\''
-        binderNode.boundVariables[b] = freshVariableWithPrefix(primedVariableName, suggestion => nameAlreadyUsedAbove(suggestion, b))
+        let primedVariableName = binderNode.bound_variables[b]+'\''
+        binderNode.bound_variables[b] = freshVariableWithPrefix(primedVariableName, suggestion => nameAlreadyUsedAbove(suggestion, b))
       } else {
         // no  conflict with this suggested name: we make it the permanent name.
       }
@@ -1202,7 +1271,7 @@ function resolveNameAmbiguity (
   bindersFromRoot.pop()
   return {
     kind: "Abs",
-    boundVariables: binderNode.boundVariables,
+    bound_variables: binderNode.bound_variables,
     body:bodyWithVariableNamesAssigned
   }
 }
@@ -1210,7 +1279,7 @@ function resolveNameAmbiguity (
 function evaluateResolveAndPrintNormalForm(term: Abs<identifier>) {
   let [readout, free_variable_indices] = evaluateAndReadout(Identifier_find_binder, term, [])
   let resolvedNameReadout = resolveNameAmbiguity(readout, free_variable_indices, [])
-  console.log(printLambdaTerm(resolvedNameReadout, false, free_variable_indices).prettyPrint)
+  console.log(printLambdaTerm(resolvedNameReadout, false, free_variable_indices).pretty_printed)
 }
 
 console.log("===== Evaluation with name-preserving resolution")

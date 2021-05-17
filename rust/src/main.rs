@@ -4,7 +4,7 @@ lalrpop_mod!(pub lambdaterms); // synthesized by LALRPOP
 
 pub mod ast;
 
-pub mod travnorm;
+pub mod traversal;
 
 pub mod term;
 
@@ -33,6 +33,18 @@ fn test_parser() {
     assert!(lambdaterms::TermParser::new().parse(r"(\Lambda  . x y)").is_err());
     assert!(lambdaterms::TermParser::new().parse(r"(\Lambda  . x y)").is_err());
 }
+
+
+fn test_traversals_enumeration () {
+  let p = lambdaterms::TermParser::new();
+  let neil = p.parse(r"(\Lambda u . u (x u))(\lambda v . v y)").unwrap()
+  ;
+
+  println!("===== Enumerating all traversals");
+  //traversal::evaluate(&neil); // <Identifier>
+}
+
+
 
 fn main() {
     let args: Vec<String> = env::args().collect();
