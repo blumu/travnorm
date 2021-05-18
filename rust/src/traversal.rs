@@ -19,11 +19,11 @@ const VERY_VERBOSE :bool = false;
 
 /// Ghosts variable node
 #[derive(Clone)]
-struct GhostVarNode { }
+pub struct GhostVarNode { }
 
 /// Ghost abstraction node
 #[derive(Clone)]
-struct GhostAbsNode {
+pub struct GhostAbsNode {
   /// List of bound variable names: always empty in a traversal prior to taking the core projection
   bound_variables : Vec<Identifier>
 }
@@ -32,7 +32,7 @@ struct GhostAbsNode {
 /// Type `S` represents a 'structural' form
 /// Type `G` represents a 'ghost' form
 #[derive(Clone, Copy)]
-enum Generalized<S, G> {
+pub enum Generalized<S, G> {
   Structural(S),
   Ghost(G)
 }
@@ -45,7 +45,7 @@ type GeneralizedAbsNode<T> = Generalized<Rc<ast::Abs<T>>, Rc<GhostAbsNode>>;
 
 /// A justification pointer
 #[derive(Clone, Copy)]
-struct Pointer {
+pub struct Pointer {
   /// distance from the justifier in the sequence
   distance : usize,
   /// and pointer's label
@@ -77,7 +77,7 @@ struct JustificationWithScope {
 
 /// An occurrence of a node of type N (without justification pointer)
 #[derive(Clone)]
-struct UnjustifiedOccurrence<N> {
+pub struct UnjustifiedOccurrence<N> {
    node : Rc<N>
 }
 
@@ -85,7 +85,7 @@ struct UnjustifiedOccurrence<N> {
 /// - For a lambda-node distinct from the root: points to its parent-node
 /// - For an internal variable: point to the occurrence of the lambda-node in the P-view binding the variable.
 #[derive(Clone)]
-struct JustifiedOccurrence<N> {
+pub struct JustifiedOccurrence<N> {
   /// the occurring node from the term tree
   node : Rc<N>,
   /// justification pointer and scope
@@ -93,7 +93,7 @@ struct JustifiedOccurrence<N> {
 }
 
 #[derive(Clone)]
-struct MaybeJustifiedOccurrence<N> {
+pub struct MaybeJustifiedOccurrence<N> {
   /// the occurring node from the term tree
   node : Rc<N>,
   /// An optional justification pointer. None for an occurrence of an initial node.
@@ -114,7 +114,7 @@ type AppOccurrence<T> = UnjustifiedOccurrence<ast::App<T>>;
 
 /// Generic enum to help create types discriminating over the three possible lambda term node types
 #[derive(Clone, Copy)]
-enum TermBranching<V,L,A> {
+pub enum TermBranching<V,L,A> {
   /// Variable
   Var(V),
   /// Lambda abstraction
@@ -228,7 +228,7 @@ impl<T> HasScope for Occurrence<T> {
 }
 
 /// State of a P-view iterator
-struct PviewIteration<'a, T> {
+pub struct PviewIteration<'a, T> {
   current_pos : i32,
   t: &'a JustSeq<T>,
 }
@@ -447,7 +447,7 @@ fn create_occurrence_of_child_of<O : OnTheFlyChildren<GeneralizedAbsNode<T>> + H
 /// and return a justification pointer to the occurrence of the binder.
 /// The P-view (which represents the path from the variable node to the tree root, see paper)
 /// is provided as an iterable argument that enumerates backwards the occurrence in the P-view.
-trait BinderLocator<Name> {
+pub trait BinderLocator<Name> {
 
   fn locate<'a> (
     reference_to_variable_name : &Name,
@@ -950,13 +950,14 @@ fn enumerate_all_traversals<T: Clone + ToString + BinderLocator<T>>(
 }
 
 
-/// A binder is defined by the list of identifier that it binds
-struct Binder {
-   bound_variables : Vec<Identifier>
-}
+/// A binder declare a list of bound identifiers
+// struct Binder {
+//    bound_variables : Vec<Identifier>
+// }
+type Binder = Vec<Identifier>;
 
 /// To support pretty-printing, the type T must implement name lookup
-trait NameLookup {
+pub trait NameLookup {
   // Given a list of binders occurring in the path from the root
   // to the variable node, return the name of the variable
   // If the variable is free then the map
@@ -983,72 +984,127 @@ impl NameLookup for String {
 }
 
 
-/// Pretty-printing helper type
-struct Pretty {
-  pretty_printed: String,
-  must_bracket_if_argument: bool
-}
 
-fn bracketize(t: Pretty) -> String {
-  if t.must_bracket_if_argument { format!("({})", t.pretty_printed) } else { t.pretty_printed }
-}
 
-/*
-fn printLambdaTerm<T : NameLookup>(
-  r: &ast::Term<T>,
-  // print variable name reference encoding in addition to resolved names
-  withEncoding: bool,
-  // optional array use to assign indices to free variables (used with the deBruijn encoding)
-  freeVariableIndices: &Vec<Identifier>
-) -> Pretty {
+mod pretty_print {
+  use crate::ast::{ alternating_rc as ast, Identifier };
 
-  fn printSubterm<T : NameLookup>(
-    term: &ast::Term<T>,
-    bindersFromRoot: Vec<ast::Abs<T>>
+  use super::NameLookup;
+
+  /// Pretty-printing helper type
+  struct Pretty {
+    pretty_printed: String,
+    must_bracket_if_argument: bool
+  }
+
+  fn bracketize(t: Pretty) -> String {
+    if t.must_bracket_if_argument { format!("({})", t.pretty_printed) } else { t.pretty_printed }
+  }
+
+  /// Arguments
+  /// =========
+  /// `root` Root of the lambda term AST
+  /// `with_encoding` if true print variable name reference encoding in addition to resolved names
+  /// `free_variable_indices` optional array use to assign indices to free variables (used with the deBruijn encoding)
+  pub fn format_lambda_term<T : Clone + NameLookup>(
+      root: &ast::Term<T>,
+      free_variable_indices: &Vec<Identifier>,
+      with_encoding: bool
+    ) -> String {
+    return format_abs(root, free_variable_indices, with_encoding, &mut Vec::new()).pretty_printed
+  }
+
+  fn format_var<T : Clone + NameLookup>(
+    var: &ast::Var<T>,
+    free_variable_indices: &Vec<Identifier>,
+    with_encoding: bool,
+    binders_from_root: &mut Vec<Vec<String>>
   ) -> Pretty {
-    match *term {
-      ast::Term::Var(v) => Pretty {
-          pretty_printed: (
-              T::lookup(bindersFromRoot, free_variable_indices, withEncoding)
-            v.name.lookup(bindersFromRoot, freeVariableIndices, withEncoding)
-                + (if v.arguments.is_empty() { "" } else {
-                   " " + v.arguments.map(|x| bracketize(printSubterm(x, bindersFromRoot))).join(" ") })),
-          must_bracket_if_argument: v.arguments.length > 0
-        },
-      ast::Term::App(app) => Pretty {
-          pretty_printed: bracketize(printSubterm(app.operator, bindersFromRoot))
-            + app.operands.map(|x| bracketize(printSubterm(x, bindersFromRoot))).join(" "),
+    let mut p : String = var.name.lookup(&binders_from_root[..], free_variable_indices, with_encoding);
+
+    if !var.arguments.is_empty() {
+      p.push_str(" ");
+      p.push_str(&mut var.arguments
+                    .iter()
+                    .map(|x| bracketize(format_abs(x, free_variable_indices, with_encoding, binders_from_root)))
+                    .collect::<Vec<String>>()
+                    .join(" "));
+    }
+
+    Pretty {
+      pretty_printed: p,
+      must_bracket_if_argument: var.arguments.len() > 0
+    }
+  }
+
+  fn format_app<T : Clone + NameLookup>(
+    app: &ast::App<T>,
+    free_variable_indices: &Vec<Identifier>,
+    with_encoding: bool,
+    binders_from_root: &mut Vec<Vec<String>>
+  ) -> Pretty {
+      Pretty {
+          pretty_printed:
+              bracketize(format_abs(&*app.operator, free_variable_indices, with_encoding, binders_from_root))
+            + &app.operands
+                    .iter()
+                    .map(|x| bracketize(format_abs(x, free_variable_indices, with_encoding, binders_from_root)))
+                    .collect::<Vec<String>>()
+                    .join(" "),
           must_bracket_if_argument: true
-        },
-      ast::Term::Abs(a) => {
-        let bodyPrint = printSubterm(a.body, bindersFromRoot.concat(term));
-        if a.bound_variables.is_empty() {
-          Pretty {
-            pretty_printed: bodyPrint.pretty_printed,
-            must_bracket_if_argument: bodyPrint.must_bracket_if_argument
-          }
-        } else {
-          Pretty {
-            pretty_printed: format!(r"\lambda {}.{}", a.bound_variables.join(" "), bodyPrint.pretty_printed),
-            must_bracket_if_argument: true
-          }
-        }
+      }
+  }
+
+  fn format_app_or_var<T : Clone + NameLookup>(
+    term: &ast::AppOrVar<T>,
+    free_variable_indices: &Vec<Identifier>,
+    with_encoding: bool,
+    binders_from_root: &mut Vec<Vec<String>>
+  ) -> Pretty {
+    match term {
+      ast::AppOrVar::Var(v) => format_var(v, free_variable_indices,with_encoding,  binders_from_root),
+      ast::AppOrVar::App(a) => format_app(a, free_variable_indices, with_encoding, binders_from_root),
+    }
+  }
+
+  fn format_abs<T : NameLookup + Clone>(
+    abs_term: &ast::Abs<T>,
+    free_variable_indices: &Vec<Identifier>,
+    with_encoding: bool,
+    binders_from_root: &mut Vec<Vec<String>>
+  ) -> Pretty {
+
+    let binders_count = binders_from_root.len();
+    binders_from_root.append(&mut  vec![abs_term.bound_variables.clone()]);
+
+    let body_print = format_app_or_var(&abs_term.body, free_variable_indices, with_encoding, binders_from_root);
+
+    binders_from_root.truncate(binders_count);
+
+    if abs_term.bound_variables.is_empty() {
+      Pretty {
+        pretty_printed: body_print.pretty_printed,
+        must_bracket_if_argument: body_print.must_bracket_if_argument
+      }
+    } else {
+      Pretty {
+        pretty_printed: format!(r"\lambda {}.{}", abs_term.bound_variables.join(" "), body_print.pretty_printed),
+        must_bracket_if_argument: true
       }
     }
   }
 
-
-  return printSubterm(r, Vec::new())
 }
 
 /// Evaluate the term with term tree root tree_root
-pub fn evaluate<T : ToString + NameLookup + BinderLocator<T>>(
+pub fn evaluate<T : Clone + ToString + NameLookup + BinderLocator<T>>(
   term: &ast::Term<T>
 ) {
-  println!("Traversing {}", printLambdaTerm(term, false, &Vec::new()).pretty_printed);
-  enumerate_all_traversals(term, &Vec::new(), &Vec::new(), 0)
+  println!("Traversing {}", pretty_print::format_lambda_term(term, &Vec::new(), false));
+  enumerate_all_traversals(term, &mut Vec::new(), &mut Vec::new(), 0)
 }
 
+/*
 /// Evaluate and readout the **name-free** normal-form.
 /// This 'read-out' implementation produces an AST with DeBruijn variable references (rather than identifiers).
 /// Variable name collision can occur if pretty-printing the term by just looking up variable name
@@ -1058,7 +1114,7 @@ fn evaluateAndReadout<T : ToString + NameLookup + BinderLocator<T>>(
   free_variable_indices: &Vec<Identifier>
 ) -> Vec<(ast::Abs<DeBruijnPair>, [Identifier])>
 {
-  println!("Evaluating {}", printLambdaTerm(root, false, free_variable_indices).pretty_printed);
+  println!("Evaluating {}", pretty_print::format_lambda_term(root, free_variable_indices, false));
 
   // Read out the subterm at ending at the last node of traversal t
   fn readout<T : Clone>(
@@ -1100,7 +1156,7 @@ fn evaluateAndReadout<T : ToString + NameLookup + BinderLocator<T>>(
 
 fn evaluateAndPrintNormalForm(term: ast::Abs<Identifier>) {
   let (readout, free_variable_indices) = evaluateAndReadout<Identifier>(term, []);
-  println!(printLambdaTerm(readout, false, free_variable_indices).pretty_printed)
+  println!(format_lambda_term(readout, false, free_variable_indices).pretty_printed)
 }
 */
 
@@ -1137,13 +1193,13 @@ evaluateAndPrintNormalForm(varityTwo)
 /// Pretty-printing of both AST type should produce the same output
 function test(term: Abs<identifier>) {
   let [readout1, free_variable_indices1] = evaluateAndReadout(Identifier_find_binder, term, [])
-  let n1 = printLambdaTerm(readout1, true, free_variable_indices1).pretty_printed
+  let n1 = format_lambda_term(readout1, true, free_variable_indices1).pretty_printed
   console.log("n1: " + n1)
 
   var free_variable_indices2: identifier[] = []
   var term2 = toDeBruijnAST(term, [], free_variable_indices2)
   let [readout2, _] = evaluateAndReadout(DeBruijnPair_find_binder, term2, free_variable_indices2)
-  let n2 = printLambdaTerm(readout2, true, free_variable_indices2).pretty_printed
+  let n2 = format_lambda_term(readout2, true, free_variable_indices2).pretty_printed
   console.log("n2: " + n2)
 
   if(n1 !== n2) throw "Test failed: normalizing both AST types should give the same result"
@@ -1184,7 +1240,7 @@ function resolveNameAmbiguity (
   // The list of binders from the root to the last node of t
   // this array gets mutated as bound variable names get renamed to avoid name collision
   // when replacing DeBruijn pairs by variable names.
-  bindersFromRoot: (Abs<DeBruijnPair>| GhostAbsNode)[] //= []
+  binders_from_root: (Abs<DeBruijnPair>| GhostAbsNode)[] //= []
   ) :Abs<identifier>
 {
   let getBindingIndex = (node: Abs<DeBruijnPair> | GhostAbsNode, variableName: identifier) => node.bound_variables.indexOf(variableName)
@@ -1193,8 +1249,8 @@ function resolveNameAmbiguity (
   function nameAlreadyUsedAbove (suggestedName:identifier, binderNameIndex:number) {
     let freeVariableWithSameName = free_variable_indices.indexOf(suggestedName)>=0
 
-    let upperBinderNodesLookup = bindersFromRoot.findIndex(binder=> isBoundByAbsNode(binder, suggestedName))
-    let nameUsedInStrictUpperBinderNodes = upperBinderNodesLookup >= 0 && upperBinderNodesLookup < bindersFromRoot.length-1
+    let upperBinderNodesLookup = binders_from_root.findIndex(binder=> isBoundByAbsNode(binder, suggestedName))
+    let nameUsedInStrictUpperBinderNodes = upperBinderNodesLookup >= 0 && upperBinderNodesLookup < binders_from_root.length-1
 
     let sameBinderNodeLookup = binderNode.bound_variables.indexOf(suggestedName)
     let nameUsedInSameBinderNode = sameBinderNodeLookup >= 0 && sameBinderNodeLookup < binderNameIndex
@@ -1203,7 +1259,7 @@ function resolveNameAmbiguity (
   }
 
   /// Assign permanent bound variable name to the lambda node, one at a time
-  bindersFromRoot.push(binderNode)
+  binders_from_root.push(binderNode)
   for(let b = 0; b<binderNode.bound_variables.length; b++) {
     let suggestedName = binderNode.bound_variables[b]
     let potentialConflict = nameAlreadyUsedAbove(suggestedName, b)
@@ -1232,7 +1288,7 @@ function resolveNameAmbiguity (
             // We found a variable node with over-arcing binding (i.e. binding lambda occurring above binder 'b')
             // we now lookup it's assigned name to check if there is a name conflict
             let adjustedDeBruijn = new DeBruijnPair(node.name.depth - depthNotToCross + 1, node.name.index)
-            let overArcingVariableAssignedName = adjustedDeBruijn.lookupBinderAndName(bindersFromRoot, free_variable_indices).name
+            let overArcingVariableAssignedName = adjustedDeBruijn.lookupBinderAndName(binders_from_root, free_variable_indices).name
 
             return (suggestedName == overArcingVariableAssignedName)
                     || node.arguments.findIndex(o=>hasNamingConflict(o, depthNotToCross+1)) >= 0
@@ -1257,18 +1313,18 @@ function resolveNameAmbiguity (
   if(binderNode.body.kind == "App") {
     bodyWithVariableNamesAssigned = {
         kind: "App",
-        operator: resolveNameAmbiguity(binderNode.body.operator, free_variable_indices, bindersFromRoot),
-        operands: binderNode.body.operands.map(a => resolveNameAmbiguity(a, free_variable_indices, bindersFromRoot))
+        operator: resolveNameAmbiguity(binderNode.body.operator, free_variable_indices, binders_from_root),
+        operands: binderNode.body.operands.map(a => resolveNameAmbiguity(a, free_variable_indices, binders_from_root))
     }
   } else { // if(root.body.kind == "Var") {
-    let assignedVariableName = binderNode.body.name.lookupBinderAndName(bindersFromRoot, free_variable_indices).name
+    let assignedVariableName = binderNode.body.name.lookupBinderAndName(binders_from_root, free_variable_indices).name
     bodyWithVariableNamesAssigned = {
       kind: "Var",
       name: assignedVariableName,
-      arguments: binderNode.body.arguments.map(a => resolveNameAmbiguity(a, free_variable_indices, bindersFromRoot))
+      arguments: binderNode.body.arguments.map(a => resolveNameAmbiguity(a, free_variable_indices, binders_from_root))
     }
   }
-  bindersFromRoot.pop()
+  binders_from_root.pop()
   return {
     kind: "Abs",
     bound_variables: binderNode.bound_variables,
@@ -1279,7 +1335,7 @@ function resolveNameAmbiguity (
 function evaluateResolveAndPrintNormalForm(term: Abs<identifier>) {
   let [readout, free_variable_indices] = evaluateAndReadout(Identifier_find_binder, term, [])
   let resolvedNameReadout = resolveNameAmbiguity(readout, free_variable_indices, [])
-  console.log(printLambdaTerm(resolvedNameReadout, false, free_variable_indices).pretty_printed)
+  console.log(format_lambda_term(resolvedNameReadout, false, free_variable_indices).pretty_printed)
 }
 
 console.log("===== Evaluation with name-preserving resolution")
@@ -1287,3 +1343,155 @@ evaluateResolveAndPrintNormalForm(neil)
 evaluateResolveAndPrintNormalForm(varityTwo)
 
 */
+
+
+
+/*
+
+/// <reference path="parsing.ts" />
+
+
+namespace DeBruijnConversion{
+  /// if true then print additional logging
+  export let verbose = false
+}
+
+function findLastIndex<T>(a: T[], condition: (element: T, index: number) => boolean): undefined | [number, T] {
+  for (var i = a.length - 1; i >= 0; i--) {
+    let e = a[i]
+    if (condition(e, i)) {
+      return [i, e]
+    }
+  }
+  return undefined
+}
+
+/// A deBruijn-like encoding where the name of a variable occurrence
+/// is defined by a pair of integers referencing to the lambda-binder
+/// and the index of the name in the lambda-binder
+class DeBruijnPair implements NameLookup {
+  // Depth is the distance from the variable node to its binder node in the path to the tree root
+  // (1 for the parent node, and so on)
+  depth: number = 0
+  // Index of the variable name in the lambda-binder
+  index: number = 0
+
+  constructor(depth: number, index: number) {
+    this.depth = depth
+    this.index = index
+  }
+
+  /// Lookup name of a bound variable.
+  /// If the variable is bound, return the binder and the name of the variable ([Abs<DeBruijnPair>, identifier])
+  /// If it's a free variable, return the name of the free variable (identifier)
+  lookupBinderAndName(
+    binders_from_root: Binder[],
+    free_variable_indices: identifier[]
+  ): { binder: Binder | undefined, name: identifier } {
+    let binderIndex = binders_from_root.length - (this.depth + 1) / 2
+    let binder = binders_from_root[binderIndex]
+    let root = binders_from_root[0]
+    let isBoundByRoot = binderIndex == 0
+    let freeVariableIndex = this.index - root.boundVariables.length - 1
+    if (isBoundByRoot && freeVariableIndex >= 0) {
+      return { binder: undefined, name: free_variable_indices[freeVariableIndex] }
+    } else {
+      let resolvedName =
+        this.index > binder.boundVariables.length
+          ?
+          // unresolved ghost variable name (should never happen on core-projected traversals)
+          '#(' + this.depth + ',' + this.index + ')'
+          : binder.boundVariables[this.index - 1]
+      return { binder: binder, name: resolvedName }
+    }
+  }
+
+  lookup(binders_from_root: Binder[], free_variable_indices: identifier[], printEncoding: boolean): string {
+    let binderAndName = this.lookupBinderAndName(binders_from_root, free_variable_indices)
+    /// If printEncoding os true then append the deBruijn pair encoding
+    return binderAndName.name + (printEncoding ? '(' + this.depth + ',' + this.index + ')' : '')
+  }
+
+}
+
+/// Convert an AST of type Abs<identifier> to an AST of type Abs<DeBruijnPair>
+/// NOTE: This is not actually needed in the implementation of the traversal-based normalization procedure
+/// it's used for debugging purpose only.
+function toDeBruijnAST(
+  /// the node of the alternating AST to convert
+  node: Abs<identifier>,
+  /// the list of binder nodes from the root
+  binders_from_root: Abs<identifier>[],
+  /// map that assigns an index to every free variable seen so far
+  free_variable_indices:identifier[]
+): Abs<DeBruijnPair>
+{
+  var new_binders_from_root = binders_from_root.concat([node])
+  let VarOrApp_Node = () : Var<DeBruijnPair> | App<DeBruijnPair> =>
+    {
+      let bodyNode = node.body
+      switch (bodyNode.kind) {
+      case "Var":
+        let variableName = bodyNode.name
+        /// find the variable binder
+        let binderLookup = findLastIndex(new_binders_from_root, b => b.boundVariables.indexOf(variableName) >= 0)
+
+        var binder : DeBruijnPair
+        if (binderLookup !== undefined) {
+          let [binderIndex, b] = binderLookup
+          let binderDistance = new_binders_from_root.length - binderIndex
+          binder = new DeBruijnPair(2 * binderDistance - 1, b.boundVariables.indexOf(variableName) + 1)
+          DeBruijnConversion.verbose && console.log('binders_from_root:' + new_binders_from_root.map(x => '[' + x.boundVariables.join(' - ') + ']').join('\\') + ' varName:' + variableName + ' binderIndex:' + binderIndex + ' depth:' + binder.depth + ' binderVarNames:' + b.boundVariables.join('-'))
+        }
+        // no binder -> x is a free variable and its enabler is the root
+        else {
+          let j = lookupOrCreateFreeVariableIndex(free_variable_indices, variableName)
+          let root = new_binders_from_root[0]
+          binder = new DeBruijnPair(2 * new_binders_from_root.length - 1, root.boundVariables.length + j)
+        }
+        return {
+          kind: "Var",
+          name: binder,
+          arguments: bodyNode.arguments.map(o => toDeBruijnAST(o, new_binders_from_root, free_variable_indices))
+        }
+      case "App":
+        return {
+          kind: "App",
+          operator: toDeBruijnAST(bodyNode.operator, new_binders_from_root, free_variable_indices),
+          operands: bodyNode.operands.map(o => toDeBruijnAST(o, new_binders_from_root, free_variable_indices))
+        }
+      }
+    }
+  return {
+    kind: "Abs",
+    boundVariables: node.boundVariables,
+    body: VarOrApp_Node()
+  }
+}
+
+
+console.log('Test printing a lambda term from the deBruijn AST')
+let d = format_lambda_term(toDeBruijnAST(omega, [], []), false).pretty_print
+let d2 = format_lambda_term(omega, false).pretty_print
+console.log(d)
+console.log(d2)
+if(d !== d2 ) {
+  throw "Pretty printing should give the same result"
+}
+
+*/
+
+mod tests {
+
+  #[test]
+  fn test_traversals_enumeration () {
+    let p = crate::lambdaterms::TermParser::new();
+    let neil = p.parse(r"(\Lambda u . u (x u))(\lambda v . v y)").unwrap()
+    ;
+
+    println!("===== Enumerating all traversals");
+    //super::evaluate::<String>(&neil);
+  }
+
+
+}
