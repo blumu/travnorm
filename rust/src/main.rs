@@ -1,6 +1,8 @@
 
 #[macro_use] extern crate lalrpop_util;
 lalrpop_mod!(pub lambdaterms); // synthesized by LALRPOP
+lalrpop_mod!(pub alt_lambdaterms); // synthesized by LALRPOP
+
 
 pub mod ast;
 
@@ -11,6 +13,8 @@ pub mod term;
 use crate::term::{length};
 use std::env;
 
+#[cfg(test)]
+mod parser_tests;
 
 fn main() {
     let args: Vec<String> = env::args().collect();

@@ -754,11 +754,12 @@ impl<'a, T : Clone> Iterator for CoreProjection<'a, T> {
 
   fn next(&mut self) -> Option<Self::Item> {
     loop {
-      let i = self.position;
-      if i == 0 { return None
+      if self.position == 0 {
+        return None
       }
 
       self.position -= 1;
+      let i = self.position;
       let o = &self.t[i];
       match o {
         Abs(o_a) if o_a.scope() == Scope::External => {
@@ -1232,6 +1233,7 @@ fn readout<T : Clone + ToString + BinderLocator<T>>(
   }
 
 }
+
 /// Evaluate and readout the __name-free__ (deBruijn pairs-based)
 /// normal-form of a lambda term.
 ///
@@ -1254,64 +1256,53 @@ fn evaluate_and_print_normal_form(term: &ast::Term<Identifier>) {
 }
 
 
-/*
 
+/// Binder locator for variable references encoded with DeBruijn pairs.
+///
+/// Suppose the variable reference is encoded by the DeBruijn pair (b, d) then
+/// the variable binder is located in the P-view at the index b starting from the end,
+/// while `d` gives the index of the bound variable name.
+///
+/// Hence, to return the pointer to the binder, this function just walks the P-view backwards
+/// for a number of steps given by the first DeBruijn index.
+///
+impl BinderLocator<DeBruijnPair> for DeBruijnPair {
 
-
-/// When using name identifier, the binder is the first lambda node
-/// in the P-view binding that particular variable name.
-/// If no such occurrence exists then it's a free variable
-/// (justified by the tree root--the initial node occurrence in the P-view)
-fn DeBruijnPair_find_binder<T>(
-  variableName: DeBruijnPair,
-  pview: PviewIteration<T>, // IterableIterator<[Occurrence<T>, number]>,
-  free_variable_indices: &[Identifier]
-) -> Pointer {
-  let mut enablerDepth: i32 = variableName.depth;
-  let mut distance = 1;
-  for (_, d) in pview {
-    enablerDepth -= 1;
-    if enablerDepth <= 0 {
-      break;
-    };
-    distance += d
+  fn locate<'a> (
+    variable_reference:&DeBruijnPair,
+    pview: PviewIteration<'a, DeBruijnPair>,
+    _: &mut Vec<Identifier>
+  ) -> Pointer {
+    let mut enabler_depth = variable_reference.depth;
+    let mut distance = 1;
+    for (_, d) in pview {
+      enabler_depth -= 1;
+      if enabler_depth <= 0 {
+        break;
+      };
+      distance += d
+    }
+    return Pointer { distance: distance, label: variable_reference.index }
   }
-  return Pointer { distance: distance, label: variableName.index }
 }
 
-/// Pretty-printing of both AST type should produce the same output
-function test(term: Abs<Identifier>) {
-  let [readout1, free_variable_indices1] = evaluate_and_name_free_readout(Identifier_find_binder, term, [])
-  let n1 = format_lambda_term(readout1, true, free_variable_indices1).pretty_printed
-  console.log("n1: " + n1)
-
-  var free_variable_indices2: [Identifier] = []
-  var term2 = toDeBruijnAST(term, [], free_variable_indices2)
-  let [readout2, _] = evaluate_and_name_free_readout(DeBruijnPair_find_binder, term2, free_variable_indices2)
-  let n2 = format_lambda_term(readout2, true, free_variable_indices2).pretty_printed
-  console.log("n2: " + n2)
-
-  if(n1 !== n2) throw "Test failed: normalizing both AST types should give the same result"
-}
-
-test(neil)
-test(varityTwo)
-
-/// Don't do this!
-// evaluate_and_print_normal_form(omega)
-
-/// Create a new variable with specified prefix
-/// that is fresh for the specified list of existing variable names
-function freshVariableWithPrefix(prefix:string, isNameClashing:(name:Identifier) => boolean)
+/// Create a new variable starting with a specified prefix
+/// that is fresh according to a given freshness checking function `is_name_clashing`.
+fn create_fresh_variable(
+    prefix:&str,
+    is_name_clashing: &dyn Fn(&Identifier) -> bool) -> String
 {
-  let candidate = prefix
-  let attempts = 1
-  while (isNameClashing(candidate)) {
-    candidate = prefix + attempts
-    attempts++
+  let mut candidate = prefix.to_owned();
+  let mut attempts = 1;
+  while is_name_clashing(&candidate) {
+    candidate = format!("{}{}", prefix, attempts);
+    attempts += 1;
   }
-  return candidate
+  candidate
 }
+
+
+/*
 
 ///////// Name resolution with anti-collision
 
@@ -1323,19 +1314,19 @@ function freshVariableWithPrefix(prefix:string, isNameClashing:(name:Identifier)
 ///
 /// This function implements the *name-preserving* read-out algorithm from the paper,
 /// that preserves original variable name when possible.
-function resolveNameAmbiguity (
+fn resolveNameAmbiguity (
   binderNode:Abs<DeBruijnPair>,
   free_variable_indices:[Identifier],
   // The list of binders from the root to the last node of t
   // this array gets mutated as bound variable names get renamed to avoid name collision
   // when replacing DeBruijn pairs by variable names.
   binders_from_root: (Abs<DeBruijnPair>| GhostAbsNode)[] //= []
-  ) :Abs<Identifier>
+  ) -> Abs<Identifier>
 {
   let getBindingIndex = (node: Abs<DeBruijnPair> | GhostAbsNode, variableName: Identifier) => node.bound_variables.indexOf(variableName)
   let isBoundByAbsNode = (node: Abs<DeBruijnPair> | GhostAbsNode, variableName: Identifier) => getBindingIndex(node, variableName) >= 0
 
-  function nameAlreadyUsedAbove (suggestedName:Identifier, binderNameIndex:number) {
+  fn nameAlreadyUsedAbove (suggestedName:Identifier, binderNameIndex:number) {
     let freeVariableWithSameName = free_variable_indices.indexOf(suggestedName)>=0
 
     let upperBinderNodesLookup = binders_from_root.findIndex(binder=> isBoundByAbsNode(binder, suggestedName))
@@ -1389,7 +1380,7 @@ function resolveNameAmbiguity (
       if(hasNamingConflict(binderNode.body, 1)) {
         // resolve the conflict by renaming the bound lambda
         let primedVariableName = binderNode.bound_variables[b]+'\''
-        binderNode.bound_variables[b] = freshVariableWithPrefix(primedVariableName, suggestion => nameAlreadyUsedAbove(suggestion, b))
+        binderNode.bound_variables[b] = create_fresh_variable(primedVariableName, suggestion => nameAlreadyUsedAbove(suggestion, b))
       } else {
         // no  conflict with this suggested name: we make it the permanent name.
       }
@@ -1421,9 +1412,9 @@ function resolveNameAmbiguity (
   }
 }
 
-function evaluate_resolve_print_normal_form(term: Abs<Identifier>) {
-  let [readout, free_variable_indices] = evaluate_and_name_free_readout(Identifier_find_binder, term, [])
-  let resolvedNameReadout = resolveNameAmbiguity(readout, free_variable_indices, [])
+fn evaluate_resolve_print_normal_form(term: Abs<Identifier>) {
+  let [readout, free_variable_indices] = evaluate_and_name_free_readout(Identifier_find_binder, term, []);
+  let resolvedNameReadout = resolveNameAmbiguity(readout, free_variable_indices, []);
   console.log(format_lambda_term(resolvedNameReadout, false, free_variable_indices).pretty_printed)
 }
 
@@ -1448,7 +1439,6 @@ function findLastIndex<T>(a: T[], condition: (element: T, index: number) => bool
   }
   return undefined
 }
-
 
 /// Convert an AST of type Abs<Identifier> to an AST of type Abs<DeBruijnPair>
 /// NOTE: This is not actually needed in the implementation of the traversal-based normalization procedure
@@ -1505,6 +1495,27 @@ function toDeBruijnAST(
   }
 }
 
+/// Pretty-printing of both AST type should produce the same output
+fn test(term: ast::Abs<Identifier>) {
+  let mut free_variable_indices1 : Vec<String> = Vec::new();
+  let readout1 = evaluate_and_name_free_readout::<Identifier>(term, free_variable_indices1);
+  let n1 = pretty_print::format_lambda_term(readout1, free_variable_indices1, true);
+
+  println!("n1: {}", n1);
+
+  let free_variable_indices2: Vec<String> = Vec::new();
+  let term2 = toDeBruijnAST(term, [], free_variable_indices2);
+  let [readout2, _] = evaluate_and_name_free_readout(DeBruijnPair_find_binder, term2, free_variable_indices2)
+  let n2 = format_lambda_term(readout2, true, free_variable_indices2).pretty_printed;
+  println!("n2: {}", n2);
+
+  if n1 != n2 {
+    panic!("Test failed: normalizing both AST types should give the same result")
+  }
+}
+test(neil)
+test(varityTwo)
+
 
 console.log('Test printing a lambda term from the deBruijn AST')
 let d = format_lambda_term(toDeBruijnAST(omega, [], []), false).pretty_print
@@ -1521,32 +1532,39 @@ mod tests {
 
   #[test]
   fn test_traversals_enumeration () {
-    let p = crate::lambdaterms::TermParser::new();
-    let neil = p.parse(r"(\Lambda u . u (x u))(\lambda v . v y)").unwrap();
+    let p = crate::alt_lambdaterms::TermParser::new();
+    let neil = p.parse(r"(λ u . u (x u))(λ v . v y)").unwrap();
+
 
     println!("===== Enumerating all traversals");
-    //super::evaluate::<String>(&neil);
+    super::evaluate::<String>(&neil);
   }
 
   #[test]
   fn test_normalization_by_traversals_namefree () {
-    let p = crate::lambdaterms::TermParser::new();
-    let neil = p.parse(r"(\Lambda u . u (x u))(\lambda v . v y)").unwrap();
+    let p = crate::alt_lambdaterms::TermParser::new();
 
     println!("===== Evaluation without name resolution");
-    // evaluate_and_print_normal_form(neil);
-    // evaluate_and_print_normal_form(varityTwo);
+
+    let neil = p.parse(r"(λ u . u (x u))(λ v . v y)").unwrap();
+    super::evaluate_and_print_normal_form(&neil);
+
+    let varity_two = p.parse(r"(λ t . t (λ n a x . n (λ s z . a (s (x s z)))) ( λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))").unwrap();
+    //super::evaluate_and_print_normal_form(varityTwo);
+
+    //// Don't do this!
+    let omega = p.parse(r"(λ x . x x)(λ x . x x)").unwrap();
+    // super::evaluate_and_print_normal_form(omega)
   }
 
 
   #[test]
   fn test_normalization_by_traversals () {
-    let p = crate::lambdaterms::TermParser::new();
-    let neil = p.parse(r"(\Lambda u . u (x u))(\lambda v . v y)").unwrap();
+    let p = crate::alt_lambdaterms::TermParser::new();
+    let neil = p.parse(r"(λ u . u (x u))(λ v . v y)").unwrap();
 
     println!("===== Evaluation with name-preserving resolution");
-    // evaluate_resolve_print_normal_form(neil)
-    // evaluate_resolve_print_normal_form(varityTwo)
-
+    // super::evaluate_resolve_print_normal_form(&neil);
+    // super::evaluate_resolve_print_normal_form(varityTwo)
   }
 }

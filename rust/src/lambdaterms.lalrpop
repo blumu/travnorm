@@ -1,10 +1,7 @@
 use std::string::String;
-//use crate::ast::standard::{LambdaTerm, Term};
-
 use crate::ast::standard::{LambdaTerm, Term as AstTerm};
 
 grammar;
-
 
 pub Term : LambdaTerm = {
     Variable,
@@ -41,12 +38,12 @@ Operand : LambdaTerm = {
 }
 
 Identifiers : Vec<String> = {
-     <v:Name> => vec![v] ,
-     <var:Name> <others:Identifiers> => {
+    <v:Name> => vec![v] ,
+    <var:Name> <others:Identifiers> => {
         let mut others = others;
         others.push(var);
         others
     }
 }
 
-Name: String = <s:r"[a-zA-Z]+"> => s.to_string();
+Name: String = <s:r"[a-zA-Z0-9]+"> => s.to_string();

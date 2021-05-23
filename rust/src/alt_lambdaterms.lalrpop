@@ -1,0 +1,78 @@
+use std::string::String;
+use std::rc::Rc;
+use crate::ast::{alternating_rc as ast};
+
+grammar;
+
+pub Term : ast::Term<String> = {
+    <u:Lambda> => u,
+    <u:ApplicationOrVariable> => ast::Abs{bound_variables:Vec::new(), body : u}
+}
+
+Variable : ast::AppOrVar<String> = {
+    <name:Name> => ast::AppOrVar::Var(Rc::new(ast::Var{ name: name, arguments:Vec::new() }))
+}
+
+Lambda : ast::Term<String> = {
+    LambdaSymbol <vars:Identifiers> "." <body:ApplicationOrVariable> =>
+            ast::Abs{ bound_variables : vars, body: body },
+
+    "(" <lambda:Lambda> ")" => lambda
+}
+
+ApplicationOrVariable : ast::AppOrVar<String> = {
+
+    <lambda:LambdaOperator> <v:Operand> => {
+        let mut operands = Vec::new();
+        operands.push(Rc::new(v));
+        ast::AppOrVar::App(Rc::new(ast::App{operator: Rc::new(lambda), operands: operands }))
+    },
+
+    <u:NonLambdaOperator> <v:Operand> => {
+        match u {
+            ast::AppOrVar::App(u_app) => {
+                let mut operands = (*u_app).operands.clone();
+                operands.push(Rc::new(v));
+                ast::AppOrVar::App(Rc::new(ast::App{operator : u_app.operator.clone(), operands: operands }))
+            },
+            ast::AppOrVar::Var(u_var) => {
+                let mut arguments = u_var.arguments.clone();
+                arguments.push(Rc::new(v));
+                ast::AppOrVar::Var(Rc::new(ast::Var{name : u_var.name.clone(), arguments: arguments }))
+            }
+        }
+    },
+    <v:Variable> => v
+}
+
+LambdaOperator : ast::Term<String> = {
+    "(" <lambda:Lambda> ")" => lambda
+}
+
+NonLambdaOperator : ast::AppOrVar<String> = {
+    <a:ApplicationOrVariable> => a,
+    "(" <a_p:ApplicationOrVariable> ")" => a_p
+}
+
+Operand : ast::Term<String> = {
+    <v:Variable> => ast::Abs{bound_variables:Vec::new(), body : v},
+    "(" <a:ApplicationOrVariable> ")" => ast::Abs{bound_variables:Vec::new(), body : a},
+    "(" <l:Lambda> ")" => l
+}
+///////
+
+Identifiers : Vec<String> = {
+    <v:Name> => vec![v] ,
+    <var:Name> <others:Identifiers> => {
+        let mut others = others;
+        others.push(var);
+        others
+    }
+}
+
+Name: String = <s:r"[a-zA-Z0-9]+"> => s.to_string();
+
+LambdaSymbol = {
+    "\\Lambda",
+    "λ"
+}
