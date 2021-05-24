@@ -1249,7 +1249,7 @@ fn evaluate_and_name_free_readout<T : Clone + ToString + NameLookup + BinderLoca
   readout(root, &mut Vec::new(), free_variable_indices, 0)
 }
 
-fn evaluate_and_print_normal_form(term: &ast::Term<Identifier>) {
+pub fn evaluate_and_print_normal_form(term: &ast::Term<Identifier>) {
   let mut free_variable_indices : Vec<String> = Vec::new();
   let readout = evaluate_and_name_free_readout::<Identifier>(term, &mut free_variable_indices);
   println!("{}", pretty_print::format_lambda_term::<DeBruijnPair>(&readout, &free_variable_indices, false))

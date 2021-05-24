@@ -10,7 +10,7 @@ pub mod traversal;
 
 pub mod term;
 
-use crate::term::{length};
+use crate::term::{HasLength};
 use std::env;
 
 #[cfg(test)]
@@ -30,16 +30,21 @@ fn main() {
 
     println!("Parsing lambda term {}", t_as_string);
 
-    let t = lambdaterms::TermParser::new().parse(t_as_string);
+    //let t = lambdaterms::TermParser::new().parse(t_as_string);
+    let parsed = alt_lambdaterms::TermParser::new().parse(t_as_string);
 
-    match t {
+    match parsed {
         Err(e) =>
             println!(
                 "Could not parse the term `{}`. Error: {}", t_as_string,e
             ),
-        Ok(t) => {
-            let n = length(t);
+        Ok(term) => {
+            let n = term.length();
             println!("term has length {}", n);
+
+            println!("===== Evaluation without name resolution");
+            traversal::evaluate_and_print_normal_form(&term);
+
         }
     }
 

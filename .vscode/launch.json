@@ -13,6 +13,24 @@
             "outFiles": [
                 "${workspaceFolder}/out/**/*.js"
             ]
-        }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Launch travnorm",
+            "args": [],
+            "program": "${workspaceFolder}/rust/target/debug/travnorm",
+            "windows": {
+                "program": "${workspaceFolder}/rust/target/debug/travnorm.exe"
+            },
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "sourceLanguages": [
+                "rust"
+            ],
+            "sourceMap": {
+                "/rustc/*": "${env:HOME}/.rustup/toolchains/stable-x86_64-apple-darwin/lib/rustlib/src/rust"
+            }
+        },
     ]
 }
