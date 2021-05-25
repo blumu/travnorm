@@ -465,7 +465,7 @@ fn lookup_or_create_free_variable_index(
     None => {
       free_variable_indices.push(variable_name.clone());
 
-      1 + free_variable_indices.len()
+      free_variable_indices.len()
     },
 
     Some(j) => // create a fresh free variable name
@@ -616,11 +616,9 @@ fn extend_traversal<T : Clone + BinderLocator<T>>(
                   })),
 
             ast::AppOrVar::Var(body_var) => {
-              let p = pview(t);
-              let n = &body_var.name;
-              let pointer = T::locate(n, p, free_variable_indices);
+              let pointer = T::locate(&body_var.name, pview(t), free_variable_indices);
 
-              let m = &t[next_index - pointer.distance]; // if d= 1 then the justifier is the last occurrence
+              let m = &t[next_index - pointer.distance]; // if distance = 1 then the justifier is the last occurrence
 
               Extension::Single(Var(Generalized::Structural(
                 JustifiedOccurrence {
@@ -712,7 +710,13 @@ fn format_occurrence<T : ToString>(
             if l <= justifier_bound_variables.len() {
               justifier_bound_variables[l - 1].to_string()
             } else {
-              free_variable_indices[(l - 1 - justifier_bound_variables.len()) as usize].clone()
+              let free_var_index = (l - 1 - justifier_bound_variables.len()) as usize;
+              if free_var_index < free_variable_indices.len() {
+                free_variable_indices[free_var_index].clone()
+              } else {
+                panic!("Invalid free variable index: {}", free_var_index)
+                //format!("@FV_{}@", free_var_index)
+              }
             };
           name + &format_pointer(pointer)
         }
@@ -727,7 +731,7 @@ fn format_occurrence<T : ToString>(
 
 fn format_sequence<T: ToString>(
     t: &JustSeq<T>,
-    free_variable_indices:&Vec<Identifier>) -> String
+    free_variable_indices:&[Identifier]) -> String
 {
   let occ : Vec<String>=
     t.iter()
@@ -742,6 +746,8 @@ fn format_sequence<T: ToString>(
 struct CoreProjection<'a, T> {
   /// The input traversal
   t: &'a JustSeq<T>,
+  /// index to name mapping for all free variables
+  free_variable_indices: &'a Vec<Identifier>,
   /// List of pending lambdas at this point
   pending_lambdas: Vec<Identifier>,
   /// Position of the current node occurrence in the input traversal
@@ -749,7 +755,7 @@ struct CoreProjection<'a, T> {
 }
 
 /// Iterate over the core projection of a traversal
-impl<'a, T : Clone> Iterator for CoreProjection<'a, T> {
+impl<'a, T : Clone + ToString> Iterator for CoreProjection<'a, T> {
   type Item = Occurrence<T>;
 
   fn next(&mut self) -> Option<Self::Item> {
@@ -840,8 +846,17 @@ impl<'a, T : Clone> Iterator for CoreProjection<'a, T> {
 
         Var(_) | App(_) => {
           // pop arity(o) elements from the left of the array
-          let (_, right) = self.pending_lambdas.split_at(o.arity());
-          self.pending_lambdas = right.to_vec();
+          let arity = o.arity();
+          let t_as_string = format_sequence(&self.t, &self.free_variable_indices);
+          let o_as_string = format_occurrence(&self.t, i, &self.free_variable_indices);
+          println!("t:{} | o: {} | arity: {} | pending lambdas: {:?}", t_as_string, o_as_string, arity, self.pending_lambdas);
+          if self.pending_lambdas.len() >= arity {
+            let remaining_lambdas = self.pending_lambdas.len() - arity;
+            self.pending_lambdas.rotate_left(arity);
+            self.pending_lambdas.truncate(remaining_lambdas)
+          } else {
+            self.pending_lambdas.clear();
+          }
         }
       }
     }
@@ -849,10 +864,11 @@ impl<'a, T : Clone> Iterator for CoreProjection<'a, T> {
 }
 
 /// Return an iterator over the core projection of a traversal
-fn core_projection<T>(t: &JustSeq<T>) -> CoreProjection<T> {
+fn core_projection<'a, T>(t: &'a JustSeq<T>, free_variable_indices: &'a Vec<Identifier>) -> CoreProjection<'a, T> {
   CoreProjection {
     pending_lambdas : Vec::new(),
     t : t,
+    free_variable_indices : free_variable_indices,
     position : t.len() // start calculating from the right
   }
 }
@@ -901,7 +917,7 @@ fn enumerate_all_traversals<T: Clone + ToString + BinderLocator<T>>(
           depth,
           format_sequence(t, free_variable_indices));
 
-      let mut p : Vec<Occurrence<T>> = core_projection(t).collect();
+      let mut p : Vec<Occurrence<T>> = core_projection(t, free_variable_indices).collect();
       p.reverse();
 
       println!("{}|      {}        projection:{}",
@@ -1184,7 +1200,7 @@ fn readout<T : Clone + ToString + BinderLocator<T>>(
   traverse_next_strand(root, &mut t, free_variable_indices);
 
   // get the last two nodes from the core projection
-  let mut p = core_projection(t);
+  let mut p = core_projection(t, free_variable_indices);
 
   // The strand ends with an external variable, call it x
   if let Some(Var(strand_end_var)) = p.next() {
@@ -1550,7 +1566,7 @@ mod tests {
     super::evaluate_and_print_normal_form(&neil);
 
     let varity_two = p.parse(r"(λ t . t (λ n a x . n (λ s z . a (s (x s z)))) ( λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))").unwrap();
-    //super::evaluate_and_print_normal_form(varityTwo);
+    //super::evaluate_and_print_normal_form(&varity_two);
 
     //// Don't do this!
     let omega = p.parse(r"(λ x . x x)(λ x . x x)").unwrap();
