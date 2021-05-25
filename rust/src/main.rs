@@ -19,7 +19,11 @@ mod parser_tests;
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    let sample_term = "(λu.u(x u))(λv.v y)";
+    let sample_term =
+        //r"(λu.u(x u))(λv.v y)"
+        r"(λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))"
+        //r"(λ x . x y) (λ z . z w)"
+        ;
 
     let t_as_string : &str=
         if args.len() > 1 {

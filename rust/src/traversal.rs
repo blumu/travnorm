@@ -341,24 +341,27 @@ impl<V:HasArity, L:HasArity, A:HasArity> HasArity for TermBranching<V, L, A> {
 
 /// Dynamic arity of a traversal (ending with an external variable)
 fn dynamic_arity<T>(t: &JustSeq<T>) -> usize {
-  let mut i :i32 = t.len() as i32 - 1;
-  let mut sum = t[i as usize].arity();
-  let mut max = sum;
+  let mut i :isize = t.len() as isize - 1;
+  let mut sum = t[i as usize].arity() as isize;
+  let mut max : isize = sum;
   i = i-1;
   while i >= 0 {
     let o = &t[i as usize];
-    let arity = o.arity();
     match o {
-      TermBranching::Abs(_) if o.scope() == Scope::External => return max,
-      TermBranching::Abs(_) => sum -= arity,
+      TermBranching::Abs(_) if o.scope() == Scope::External =>
+        return max as usize,
+
+      TermBranching::Abs(_) =>
+        sum -= o.arity() as isize,
+
       TermBranching::Var(_) | TermBranching::App(_) => {
-          sum += arity;
-          max = cmp::max(sum, max)
-        }
+        sum += o.arity() as isize;
+        max = cmp::max(sum, max)
+      }
     }
     i = i-1;
   };
-  max
+  max as usize
 }
 
 /// Ability to instantiate (possibly fictitious) children nodes
@@ -1545,16 +1548,20 @@ if(d !== d2 ) {
 */
 
 mod tests {
+  const VARITY_TWO :&str = r"(λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0)) (λ s2 z2 . s2 (s2 z2))";
+  const OMEGA :&str = r"(λ x . x x)(λ x . x x)";
+  const NEIL : &str = r"(λ u . u (x u))(λ v . v y)";
 
   #[test]
   fn test_traversals_enumeration () {
     let p = crate::alt_lambdaterms::TermParser::new();
-    let neil = p.parse(r"(λ u . u (x u))(λ v . v y)").unwrap();
+    let neil = p.parse(NEIL).unwrap();
 
 
     println!("===== Enumerating all traversals");
     super::evaluate::<String>(&neil);
   }
+
 
   #[test]
   fn test_normalization_by_traversals_namefree () {
@@ -1562,14 +1569,14 @@ mod tests {
 
     println!("===== Evaluation without name resolution");
 
-    let neil = p.parse(r"(λ u . u (x u))(λ v . v y)").unwrap();
+    let neil = p.parse(NEIL).unwrap();
     super::evaluate_and_print_normal_form(&neil);
 
-    let varity_two = p.parse(r"(λ t . t (λ n a x . n (λ s z . a (s (x s z)))) ( λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))").unwrap();
-    //super::evaluate_and_print_normal_form(&varity_two);
+    let varity_two = p.parse(VARITY_TWO).unwrap();
+    super::evaluate_and_print_normal_form(&varity_two);
 
     //// Don't do this!
-    let omega = p.parse(r"(λ x . x x)(λ x . x x)").unwrap();
+    let omega = p.parse(OMEGA).unwrap();
     // super::evaluate_and_print_normal_form(omega)
   }
 
@@ -1577,7 +1584,7 @@ mod tests {
   #[test]
   fn test_normalization_by_traversals () {
     let p = crate::alt_lambdaterms::TermParser::new();
-    let neil = p.parse(r"(λ u . u (x u))(λ v . v y)").unwrap();
+    let neil = p.parse(NEIL).unwrap();
 
     println!("===== Evaluation with name-preserving resolution");
     // super::evaluate_resolve_print_normal_form(&neil);
