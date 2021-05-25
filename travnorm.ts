@@ -505,9 +505,9 @@ function evaluateAndReadout<T extends NameLookup>(
 
     let argumentOccurrences = newStrandOpeningOccurrences(t, strandEndVar)
     if (argumentOccurrences.length == 0) {
-      verbose && console.log('Strand ended|Maximal    |Depth:' + depth + '|Trav: ' + printSequence(t, freeVariableIndices))
+      verbose && console.log('Strand ended|Maximal    |Depth:' + depth + '|Traversal: ' + printSequence(t, freeVariableIndices))
     } else {
-      verbose && console.log('Strand ended|Not maximal|Depth:' + depth + '|Trav: ' + printSequence(t, freeVariableIndices))
+      verbose && console.log('Strand ended|Not maximal|Depth:' + depth + '|Traversal: ' + printSequence(t, freeVariableIndices))
     }
 
     return {

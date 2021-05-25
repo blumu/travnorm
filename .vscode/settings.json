@@ -5,6 +5,7 @@
         "bracketize",
         "combinators",
         "concat",
+        "debruijn",
         "lalrpop",
         "lambdaterms",
         "pview",

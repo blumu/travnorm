@@ -49,6 +49,9 @@ fn main() {
             println!("===== Evaluation without name resolution");
             traversal::evaluate_and_print_normal_form(&term);
 
+            println!("===== Evaluation with name resolution");
+            traversal::evaluate_resolve_print_normal_form(&term);
+
         }
     }
 

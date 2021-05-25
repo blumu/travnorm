@@ -6,7 +6,7 @@ The final paper is being finalized for publication in TCS.
 
 ## Other implementations
 
-- **OCaml/F#** implementation with GUI available at https://github.com/blumu/dphil.tools/tree/master/HOG
+- **OCaml/F#** implementation with GUI available [https://github.com/blumu/dphil.tools/tree/master/HOG](here)
 This is based on a tool I wrote back in 2008 for my DPhil thesis.
 (Traversal enumeration only, does not implement the name-resolution readout from the paper)
 
@@ -16,7 +16,7 @@ This is based on a tool I wrote back in 2008 for my DPhil thesis.
 
 `(lambda u.u (x u))(lambda v.v y)`
 
-```
+```text
 |Depth:0|External variable reached with 2 branch(es):[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)
 |Depth:0|Choice:1|Trav: []--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1) |Occurrence: [](1,1)
   |Depth:1|External variable reached with 1 branch(es):[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--[](1,1)--u(7,1)--[v](9,1)--v(1,1)--$[](3,1)--#(5,1)
@@ -50,7 +50,7 @@ let two = abs(['s2', 'z2'], app('s2', app('s2', 'z2')))
 evaluateAndPrintNormalForm(app(varity, two))
 ```
 
-```
+```text
 Evaluating (lambda t.t (lambda n a x.n (lambda s z.a s (x s z))) (lambda a.a) (lambda z0.z0))(lambda s2 z2.s2 (s2 z2))
 lambda x x' s z.s (x s (x' s z))
 ```
@@ -80,9 +80,4 @@ Running all tests:
 
 ```cmd
 node out\all_tests.js
-```
-
-```cmd
-tsc
-node out\travnormcombined.js
 ```
