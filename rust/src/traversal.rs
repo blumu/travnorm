@@ -15,6 +15,10 @@ const VERBOSE :bool = false;
 // if true print traversal after every single extension
 const VERY_VERBOSE :bool = false;
 
+// if true then print additional debugging information
+const DEBUG :bool = false;
+
+
 ////////// Justified sequences
 
 /// Ghosts variable node
@@ -850,9 +854,13 @@ impl<'a, T : Clone + ToString> Iterator for CoreProjection<'a, T> {
         Var(_) | App(_) => {
           // pop arity(o) elements from the left of the array
           let arity = o.arity();
-          let t_as_string = format_sequence(&self.t, &self.free_variable_indices);
-          let o_as_string = format_occurrence(&self.t, i, &self.free_variable_indices);
-          println!("t:{} | o: {} | arity: {} | pending lambdas: {:?}", t_as_string, o_as_string, arity, self.pending_lambdas);
+
+          if DEBUG {
+            println!("t:{} | o: {} | arity: {} | pending lambdas: {:?}",
+              format_sequence(&self.t, &self.free_variable_indices),
+              format_occurrence(&self.t, i, &self.free_variable_indices), arity, self.pending_lambdas);
+          }
+
           if self.pending_lambdas.len() >= arity {
             let remaining_lambdas = self.pending_lambdas.len() - arity;
             self.pending_lambdas.rotate_left(arity);
@@ -1032,11 +1040,20 @@ mod pretty_print {
 
   /// Arguments
   /// =========
-  /// `root` Root of the lambda term AST
-  /// `with_encoding` if true print variable name reference encoding in addition to resolved names
-  /// `free_variable_indices` array that can optionally be used by the variable lookup function to
+  /// - `root` Root of the lambda term AST
+  ///
+  /// - `with_encoding` if true print variable name reference encoding in addition to resolved names.
+  /// E.g. when using DeBruijn pair encoding, this would print terms of this form:
+  /// `\lambda x x s z.s(1,3) (x(3,1) s(5,3) (x(5,2) s(7,3) z(7,4)))`
+  /// where the encoding in bracket helps removed the ambiguity caused by having the same name `x`
+  /// shared by two distinct bound variables.
+  /// In this example, `x(3,1)` refers to the first bound `x`, while `x(5,2)` refers to the second bound variable `x`.
+  ///
+  /// - `free_variable_indices` array that can optionally be used by the variable lookup function to
   /// assign an index to free variables.
   /// This is used for instance, when T is the deBruijn encoding. If `T` is String it's not used.
+  ///
+  ///
   pub fn format_lambda_term<T : Clone + NameLookup>(
       root: &ast::Term<T>,
       free_variable_indices: &Vec<Identifier>,
@@ -1264,14 +1281,17 @@ fn evaluate_and_name_free_readout<T : Clone + ToString + NameLookup + BinderLoca
   free_variable_indices: &mut Vec<Identifier>
 ) -> ast::Abs<DeBruijnPair>
 {
-  println!("Evaluating {}", pretty_print::format_lambda_term(root, free_variable_indices, false));
+  // Note that we set the `with_encoding` argument to `true`, otherwise
+  // by printing the variable names only it can create naming conflicts.
+
+  println!("Evaluating {}", pretty_print::format_lambda_term(root, free_variable_indices, true));
   readout(root, &mut Vec::new(), free_variable_indices, 0)
 }
 
 pub fn evaluate_and_print_normal_form(term: &ast::Term<Identifier>) {
   let mut free_variable_indices : Vec<String> = Vec::new();
   let readout = evaluate_and_name_free_readout::<Identifier>(term, &mut free_variable_indices);
-  println!("{}", pretty_print::format_lambda_term::<DeBruijnPair>(&readout, &free_variable_indices, false))
+  println!("{}", pretty_print::format_lambda_term::<DeBruijnPair>(&readout, &free_variable_indices, true))
 }
 
 

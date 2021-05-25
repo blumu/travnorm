@@ -63,7 +63,7 @@ Operand : ast::Term<String> = {
 
 Identifiers : Vec<String> = {
     <v:Name> => vec![v] ,
-    <var:Name> <others:Identifiers> => {
+    <others:Identifiers> <var:Name>  => {
         let mut others = others;
         others.push(var);
         others
