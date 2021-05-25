@@ -1,10 +1,18 @@
-/// <reference path="parsing.ts" />
-/// <reference path="deBruijnAst.ts" />
+import { identifier, Abs, App, Var, lookupOrCreateFreeVariableIndex, NameLookup,  printLambdaTerm, neil, varityTwo } from "./parsing";
+import { DeBruijnPair, toDeBruijnAST } from "./deBruijnAst";
 
 /// if true then print additional logging
 let verbose = false
 /// if true print traversal after every single extension
 let veryVerbose = false
+
+export function setVerbosity(v : boolean) {
+  verbose = v;
+}
+
+export function setVeryVerbosity(v: boolean) {
+  veryVerbose = v;
+}
 
 ////////// Justified sequences
 
@@ -218,7 +226,7 @@ type LocateBinder<T> = (variableNameReference:T, pview: IterableIterator<[Occurr
 /// in the P-view binding that particular variable name.
 /// If no such occurrence exists then it's a free variable
 /// (justified by the tree root--the initial node occurrence in the P-view)
-function Identifier_findBinder<T> (
+export function Identifier_findBinder<T> (
   variableName:identifier,
   pview: IterableIterator<[Occurrence<T>, number]>,
   freeVariableIndices: identifier[]
@@ -455,7 +463,7 @@ function enumerateAllTraversals<T>(
 }
 
 /// Evaluate the term with term tree root treeRoot
-function evaluate<T extends NameLookup>(
+export function evaluate<T extends NameLookup>(
   findBinder: LocateBinder<T>,
   term: Abs<T>
 ) {
@@ -463,9 +471,10 @@ function evaluate<T extends NameLookup>(
   enumerateAllTraversals(findBinder, term, [], [])
 }
 
-console.log("===== Enumerating all traversals")
-evaluate(Identifier_findBinder, neil)
-
+export function test_enumerate_traversals(){
+  console.log("===== Enumerating all traversals")
+  evaluate(Identifier_findBinder, neil)
+}
 
 /// Evaluate and readout the **name-free** normal-form.
 /// This 'read-out' implementation produces an AST with DeBruijn variable references (rather than identifiers).
@@ -523,13 +532,14 @@ function evaluateAndPrintNormalForm(term: Abs<identifier>) {
   console.log(printLambdaTerm(readout, false, freeVariableIndices).prettyPrint)
 }
 
-console.log("===== Evaluation without name resolution")
-evaluateAndPrintNormalForm(neil)
-evaluateAndPrintNormalForm(varityTwo)
-
+export function test_enumerate_no_resolution () {
+  console.log("===== Evaluation without name resolution")
+  evaluateAndPrintNormalForm(neil)
+  evaluateAndPrintNormalForm(varityTwo)
+}
 
 /// Pretty-printing of both AST type should produce the same output
-function test(term: Abs<identifier>) {
+export function test_ast_pretty_printing(term: Abs<identifier>) {
   let [readout1, freeVariableIndices1] = evaluateAndReadout(Identifier_findBinder, term)
   let n1 = printLambdaTerm(readout1, true, freeVariableIndices1).prettyPrint
   console.log('n1: ' + n1)
@@ -543,8 +553,6 @@ function test(term: Abs<identifier>) {
   if(n1 !== n2) throw "Test failed: normalizing both AST types should give the same result"
 }
 
-test(neil)
-test(varityTwo)
 
 /// Don't do this!
 // evaluateAndPrintNormalForm(omega)
@@ -676,6 +684,8 @@ function evaluateResolveAndPrintNormalForm(term: Abs<identifier>) {
   console.log(printLambdaTerm(resolvedNameReadout, false, freeVariableIndices).prettyPrint)
 }
 
-console.log("===== Evaluation with name-preserving resolution")
-evaluateResolveAndPrintNormalForm(neil)
-evaluateResolveAndPrintNormalForm(varityTwo)
+export function test_name_preserving_evaluation() {
+  console.log("===== Evaluation with name-preserving resolution")
+  evaluateResolveAndPrintNormalForm(neil)
+  evaluateResolveAndPrintNormalForm(varityTwo)
+}

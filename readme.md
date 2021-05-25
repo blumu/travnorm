@@ -64,3 +64,25 @@ lambda x x' s z.s (x s (x' s z))
 - Alternating AST probably not needed: p-view/core could be adjusted to operate on traditional AST (with single node per lambda/application), though traversals would get longer;
 - Implementing traversals using (shared) linked-lists could help save on memory by avoiding array copy at each recursive call.
   Justification pointers could also be implemented using memory pointers instead of array index/deltas.
+
+## Manual
+
+### Install dependencies
+
+Install nodejs and typescript.
+(The project was tested with TypeScript 4.2.4.)
+
+```cmd
+npm install -D typescript
+```
+
+Running all tests:
+
+```cmd
+node out\all_tests.js
+```
+
+```cmd
+tsc
+node out\travnormcombined.js
+```

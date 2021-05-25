@@ -4,22 +4,22 @@
 ///
 
 /// Variable names
-type identifier = string
+export type identifier = string
 
 ////////////// Lambda term with alternating AST
 /// The type T represents the type used to label variable nodes
 /// It can be for instance just 'string' or a deBruijn index
-type Var<T> = { kind: "Var", name: T, arguments: Abs<T>[] }
-type App<T> = { kind: "App", operator: Abs<T>, operands: Abs<T>[] }
-type Abs<T> = { kind: "Abs", boundVariables: identifier[], body: App<T> | Var<T> }
+export type Var<T> = { kind: "Var", name: T, arguments: Abs<T>[] }
+export type App<T> = { kind: "App", operator: Abs<T>, operands: Abs<T>[] }
+export type Abs<T> = { kind: "Abs", boundVariables: identifier[], body: App<T> | Var<T> }
 
 type LambdaAST<T> = Var<T> | App<T> | Abs<T>
 
 /// A binder is defined by the list of identifier that it binds
-type Binder = { boundVariables: identifier[] }
+export type Binder = { boundVariables: identifier[] }
 
 /// To support pretty-printing, the type T must implement name lookup
-interface NameLookup {
+export interface NameLookup {
   // Given a list of binders occurring in the path from the root
   // to the variable node, return the name of the variable
   // If the variable is free then the map
@@ -41,7 +41,7 @@ function bracketize(t: Pretty): string {
   return t.mustBracketIfArgument ? '(' + t.prettyPrint + ')' : t.prettyPrint
 }
 
-function printLambdaTerm<T extends NameLookup>(
+export function printLambdaTerm<T extends NameLookup>(
   r: Abs<T>,
   // print variable name reference encoding in addition to resolved names
   withEncoding: boolean,
@@ -130,7 +130,7 @@ function app<T>(operator: Abs<T> | T, operands: Abs<T> | Abs<T>[] | T = []): Abs
 }
 
 /// lookup the index assigned to a free variable, or create one if it is not defined yet
-function lookupOrCreateFreeVariableIndex(freeVariableIndices: string[], variableName: string) {
+export function lookupOrCreateFreeVariableIndex(freeVariableIndices: string[], variableName: string) {
   let j = freeVariableIndices.indexOf(variableName)
   return (j < 0)
     // create a fresh free variable name
@@ -143,11 +143,11 @@ function lookupOrCreateFreeVariableIndex(freeVariableIndices: string[], variable
 // An implementation of variable labels where the variable
 // name is specified in every node of the tree
 // by the name identifier itself
-//declare global {
+declare global {
   interface String {
     lookup<T>(bindersFromRoot: Abs<T>[], freeVariableIndices: identifier[]): string
   }
-//}
+}
 
 String.prototype.lookup = function <T>(bindersFromRoot: Abs<T>[], freeVariableIndices: identifier[]) {
   // The name of the variable occurrence is just name identifier itself!
@@ -163,10 +163,10 @@ type AltLambda = Abs<identifier>
 
 let identity = abs(['x'], 'x')
 let delta = abs(['x'], app('x', 'x'))
-var omega = app(delta, delta)
+export var omega = app(delta, delta)
 
 /// Neil Jones's example: J = (\u.u(x u))(\v.v y)
-let neil =
+export let neil =
   app(abs(['u'], app('u', app('x', 'u'))),
     abs(['v'], app('v', 'y')))
 
@@ -178,11 +178,14 @@ let varity =
 
 let two = abs(['s2', 'z2'], app('s2', app('s2', 'z2')))
 
-let varityTwo = app(varity, two)
+export let varityTwo = app(varity, two)
 
-console.log("===== Parsing and pretty-printing examples")
 
-console.log(printLambdaTerm(identity, false).prettyPrint)
-console.log(printLambdaTerm(omega, false).prettyPrint)
-console.log(printLambdaTerm(neil, false).prettyPrint)
-console.log(printLambdaTerm(varityTwo, false).prettyPrint)
+export function test_parsing () {
+  console.log("===== Parsing and pretty-printing examples")
+
+  console.log(printLambdaTerm(identity, false).prettyPrint)
+  console.log(printLambdaTerm(omega, false).prettyPrint)
+  console.log(printLambdaTerm(neil, false).prettyPrint)
+  console.log(printLambdaTerm(varityTwo, false).prettyPrint)
+}

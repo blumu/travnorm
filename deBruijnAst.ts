@@ -1,5 +1,6 @@
 /// <reference path="parsing.ts" />
 
+import { identifier, Abs, App, Var, lookupOrCreateFreeVariableIndex, NameLookup, printLambdaTerm, Binder, omega } from "./parsing";
 
 namespace DeBruijnConversion{
   /// if true then print additional logging
@@ -19,7 +20,7 @@ function findLastIndex<T>(a: T[], condition: (element: T, index: number) => bool
 /// A deBruijn-like encoding where the name of a variable occurrence
 /// is defined by a pair of integers referencing to the lambda-binder
 /// and the index of the name in the lambda-binder
-class DeBruijnPair implements NameLookup {
+export class DeBruijnPair implements NameLookup {
   // Depth is the distance from the variable node to its binder node in the path to the tree root
   // (1 for the parent node, and so on)
   depth: number = 0
@@ -67,7 +68,7 @@ class DeBruijnPair implements NameLookup {
 /// Convert an AST of type Abs<identifier> to an AST of type Abs<DeBruijnPair>
 /// NOTE: This is not actually needed in the implementation of the traversal-based normalization procedure
 /// it's used for debugging purpose only.
-function toDeBruijnAST(
+export function toDeBruijnAST(
   /// the node of the alternating AST to convert
   node: Abs<identifier>,
   /// the list of binder nodes from the root
@@ -119,12 +120,13 @@ function toDeBruijnAST(
   }
 }
 
-
-console.log('Test printing a lambda term from the deBruijn AST')
-let d = printLambdaTerm(toDeBruijnAST(omega, [], []), false).prettyPrint
-let d2 = printLambdaTerm(omega, false).prettyPrint
-console.log(d)
-console.log(d2)
-if(d !== d2 ) {
-  throw "Pretty printing should give the same result"
+export function test_debruijn_ast_printing() {
+  console.log('Test printing a lambda term from the deBruijn AST')
+  let d = printLambdaTerm(toDeBruijnAST(omega, [], []), false).prettyPrint
+  let d2 = printLambdaTerm(omega, false).prettyPrint
+  console.log(d)
+  console.log(d2)
+  if (d !== d2) {
+    throw "Pretty printing should give the same result"
+  }
 }
