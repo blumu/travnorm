@@ -30,7 +30,7 @@ _ReSharper*/
 .vs/
 #Nuget packages folder
 packages/
-/out/*
+typescript/out/*
 /rust/.ionide/symbolCache.db
 /rust/target/**
 node_modules/**
