@@ -1,6 +1,6 @@
 use std::string::String;
 use std::rc::Rc;
-use crate::ast::{alternating_rc as ast};
+use crate::ast::{alternating as ast};
 
 grammar;
 

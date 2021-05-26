@@ -34,7 +34,6 @@ fn main() {
 
     println!("Parsing lambda term {}", t_as_string);
 
-    //let t = lambdaterms::TermParser::new().parse(t_as_string);
     let parsed = alt_lambdaterms::TermParser::new().parse(t_as_string);
 
     match parsed {

@@ -10,7 +10,7 @@ pub Term : LambdaTerm = {
 }
 
 Variable : LambdaTerm = {
-    <name:Name> => AstTerm::Variable(name)
+    <name:Name> => AstTerm::Var(name)
 }
 
 Lambda : LambdaTerm = {

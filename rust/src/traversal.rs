@@ -5,7 +5,7 @@
 use crate::traversal::TermBranching::{Abs, Var, App};
 use crate::traversal::Generalized::{Structural, Ghost};
 
-use crate::ast::{ alternating_rc as ast, Identifier };
+use crate::ast::{ alternating as ast, Identifier };
 use std::cmp;
 use std::rc::Rc;
 
@@ -794,7 +794,7 @@ impl<'a, T : Clone + ToString> Iterator for CoreProjection<'a, T> {
             }
           };
 
-          self.pending_lambdas.truncate(0);
+          self.pending_lambdas.clear();
 
           return Some(Abs(clone_occurrence))
         },
@@ -839,7 +839,7 @@ impl<'a, T : Clone + ToString> Iterator for CoreProjection<'a, T> {
             }
           };
 
-          self.pending_lambdas.truncate(0);
+          self.pending_lambdas.clear();
 
           return Some (Var(cloned_occurrence))
         },
@@ -930,26 +930,8 @@ fn enumerate_all_traversals<T: Clone + ToString + BinderLocator<T>>(
           format_sequence(&p, free_variable_indices));
     },
 
-    // traversing the root node, or the single child lambda node of an external variable node
-    Extension::Single(o) => {
-      if VERBOSE { println!("{}|Depth:{}|External variable reached with single choice: {}",
-        log_indent,
-        depth,
-        format_sequence(t, free_variable_indices)) };
-
-      let mut t2: JustSeq<T> = t.clone();
-      let before_length = t2.len();
-      t2.push(o);
-
-      if VERBOSE { println!("{}|Depth:{}|Traversal: {}|Occurrence: {}",
-        log_indent, depth,
-        format_sequence(t, free_variable_indices),
-        format_occurrence(&t2, t.len(), free_variable_indices)) };
-
-      enumerate_all_traversals(tree_root, &mut t2, free_variable_indices, depth+1);
-
-      t2.truncate(before_length)
-
+    Extension::Single(_) => {
+      panic!("Cannot happen: single-choice extensions all unfolded when traversing the strand!")
     },
 
     // previous occurrence is an external variable with multiple non-deterministic choices
@@ -962,18 +944,16 @@ fn enumerate_all_traversals<T: Clone + ToString + BinderLocator<T>>(
         format_sequence(t, free_variable_indices)) };
 
       for o in node_occurrence_choices {
-        let mut t2: JustSeq<T> = t.clone();
-        let before_length = t2.len();
-
         let label = o.may_pointer().unwrap().label;
-        t2.push(Abs(o));
+        let before_length = t.len();
+        t.push(Abs(o));
         if VERBOSE { println!("{}|Depth:{}|Choice:{}|Traversal: {}|Occurrence: {}",
           log_indent, depth,
           label, // node_occurrence_choices all have a pointer
           format_sequence(t, free_variable_indices),
-          format_occurrence(&t2, t.len(), free_variable_indices));
-        enumerate_all_traversals(tree_root, &mut t2, free_variable_indices, depth+1);
-        t2.truncate(before_length);
+          format_occurrence(t, t.len(), free_variable_indices));
+        enumerate_all_traversals(tree_root, t, free_variable_indices, depth+1);
+        t.truncate(before_length);
        }
       }
     }
@@ -1000,7 +980,6 @@ pub trait NameLookup {
   )-> String;
 }
 
-
 impl NameLookup for String {
   fn lookup(
     &self,
@@ -1013,11 +992,8 @@ impl NameLookup for String {
   }
 }
 
-
-
-
 mod pretty_print {
-  use crate::ast::{ alternating_rc as ast, Identifier };
+  use crate::ast::{ alternating as ast, Identifier };
 
   use super::NameLookup;
 
@@ -1096,18 +1072,6 @@ mod pretty_print {
       }
   }
 
-  fn format_app_or_var<T : Clone + NameLookup>(
-    term: &ast::AppOrVar<T>,
-    free_variable_indices: &Vec<Identifier>,
-    with_encoding: bool,
-    binders_from_root: &mut Vec<super::Binder>
-  ) -> Pretty {
-    match term {
-      ast::AppOrVar::Var(v) => format_var(v, free_variable_indices,with_encoding,  binders_from_root),
-      ast::AppOrVar::App(a) => format_app(a, free_variable_indices, with_encoding, binders_from_root),
-    }
-  }
-
   fn format_abs<T : NameLookup + Clone>(
     abs_term: &ast::Abs<T>,
     free_variable_indices: &Vec<Identifier>,
@@ -1115,12 +1079,15 @@ mod pretty_print {
     binders_from_root: &mut Vec<super::Binder>
   ) -> Pretty {
 
-    let binders_count = binders_from_root.len();
     binders_from_root.push(abs_term.bound_variables.clone());
 
-    let body_print = format_app_or_var(&abs_term.body, free_variable_indices, with_encoding, binders_from_root);
+    let body_print =
+      match &abs_term.body {
+        ast::AppOrVar::Var(v) => format_var(v, free_variable_indices,with_encoding,  binders_from_root),
+        ast::AppOrVar::App(a) => format_app(a, free_variable_indices, with_encoding, binders_from_root),
+      };
 
-    binders_from_root.truncate(binders_count);
+    binders_from_root.pop();
 
     if abs_term.bound_variables.is_empty() {
       Pretty {
@@ -1193,17 +1160,21 @@ impl NameLookup for DeBruijnPair {
     }
 }
 
-
-
-/// Read out the subterm whose root node is the last occurrence of traversal t
-/// by recursively extending the traversal strands.
+/// Recursively traverse the term tree and read out its normal form.
+///
+/// The traversal resumes at the point given by the specified traversal `t`
+/// and proceeds by recursively extending the traversal one strand at a time.
+///
+/// The function returns the normal form of the subterm whose root node is
+/// the last occurrence of traversal `t`
 ///
 /// Arguments:
 /// ----------
-/// - `t`: a strand-complete traversal
+/// - `root` the root of the term tree
+/// - `t`: a strand-complete traversal of the tree
 /// - `free_variable_indices` free variable name to index table
 /// - `depth` node depth of the last node in the traversal
-fn readout<T : Clone + ToString + BinderLocator<T>>(
+fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
     root:&ast::Term<T>,
     mut t: &mut JustSeq<T>,
     free_variable_indices: &mut Vec<Identifier>,
@@ -1247,7 +1218,7 @@ fn readout<T : Clone + ToString + BinderLocator<T>>(
                         .iter()
                         .map(|o| {
                                   t.push(Abs(o.clone()));
-                                  let r = readout(root, t, free_variable_indices, depth+1);
+                                  let r = traverse_and_readout(root, t, free_variable_indices, depth+1);
                                   t.truncate(length_before);
                                   Rc::new(r)
                         })
@@ -1263,7 +1234,7 @@ fn readout<T : Clone + ToString + BinderLocator<T>>(
 
 }
 
-/// Evaluate and readout the __name-free__ (deBruijn pairs-based)
+/// Evaluate and readout the *name-free* (deBruijn pairs-based)
 /// normal-form of a lambda term.
 ///
 /// This 'read-out' implementation produces an AST with DeBruijn variable references rather than string identifiers.
@@ -1274,13 +1245,13 @@ fn evaluate_and_name_free_readout<T : Clone + ToString + NameLookup + BinderLoca
   free_variable_indices: &mut Vec<Identifier>
 ) -> ast::Abs<DeBruijnPair>
 {
-  // Note that we set the `with_encoding` argument to `true`, otherwise
-  // by printing the variable names only it can create naming conflicts.
-
+  // Note that we set the `with_encoding` argument to `true`, since otherwise
+  // by printing the variable names only we could create naming conflicts.
   println!("Evaluating {}", pretty_print::format_lambda_term(root, free_variable_indices, true));
-  readout(root, &mut Vec::new(), free_variable_indices, 0)
+  traverse_and_readout(root, &mut Vec::new(), free_variable_indices, 0)
 }
 
+/// Evaluate and readout the *name-free* normal form of a lambda term and print out the resulting term
 pub fn evaluate_and_print_normal_form(term: &ast::Term<Identifier>) {
   let mut free_variable_indices : Vec<String> = Vec::new();
   let readout = evaluate_and_name_free_readout::<Identifier>(term, &mut free_variable_indices);
@@ -1338,10 +1309,11 @@ fn try_get_binding_index(b:&Binder, name:&str) -> Option<usize> {
   b.iter().position(|v| v == name)
 }
 
-// Is there an actual conflict? I.e. is there a variable occurring below
-// the current node in the term tree, whose deBruijn index refers to an upper binding
-// with the same name?
-fn has_naming_conflict_abs (
+/// Determine if there is any variable occurring below a given node that would cause a naming conflict
+/// if the given suggested name were to be introduced in a lambda node above it? I.e. is there a variable occurring
+/// below the current node in the term tree whose deBruijn index refers to an upper binding
+/// with the same name?
+fn has_naming_conflict (
     binding_index: usize,
     abs_node : &ast::Abs<DeBruijnPair>,
     free_variable_indices: &[Identifier],
@@ -1349,25 +1321,15 @@ fn has_naming_conflict_abs (
     depth_not_to_cross:usize,
     suggested_name:&str ) -> bool
 {
-  has_naming_conflict(binding_index, &abs_node.body, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)
-}
-
-fn has_naming_conflict (
-    binding_index: usize,
-    node : &ast::AppOrVar<DeBruijnPair>,
-    free_variable_indices: &[Identifier],
-    binders_from_root : &[Binder],
-    depth_not_to_cross:usize,
-    suggested_name:&str ) -> bool
-{
-  match node {
+  let depth_not_to_cross = depth_not_to_cross + 1;
+  match &abs_node.body {
     ast::AppOrVar::App(a) => {
-      has_naming_conflict_abs(binding_index, &a.operator, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)
-      || a.operands.iter().position(|o| has_naming_conflict_abs(binding_index, o, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)).is_some()
+      has_naming_conflict(binding_index, &a.operator, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)
+      || a.operands.iter().position(|o| has_naming_conflict(binding_index, o, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)).is_some()
     },
 
     ast::AppOrVar::Var(v) => {
-      // +1 because variable name in lambda-binders start at index 1
+      // Note that `+1` is needed because variable name in lambda-binders start at index 1
       let current_index_in_current_binder_node = binding_index + 1;
       let over_arcing_binding =
         v.name.depth > depth_not_to_cross
@@ -1376,18 +1338,20 @@ fn has_naming_conflict (
 
       if over_arcing_binding {
         // We found a variable node with over-arcing binding (i.e. binding lambda occurring above binder 'b')
-        // we now lookup it's assigned name to check if there is a name conflict
+        // we now lookup its assigned name to check if there is a name conflict
         let adjusted_debruijn = DeBruijnPair{ depth : v.name.depth - depth_not_to_cross + 1, index : v.name.index };
         let over_arcing_variable_assigned_name =
           adjusted_debruijn.lookup(binders_from_root, &free_variable_indices, false);
 
-        (suggested_name == over_arcing_variable_assigned_name) || v.arguments.iter().position(|o| has_naming_conflict_abs(binding_index, o, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)).is_some()
-      } else {
-        v.arguments.iter().position(|o| has_naming_conflict_abs(binding_index, o, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)).is_some()
+        if suggested_name == over_arcing_variable_assigned_name {
+          return true
+        }
       }
+      v.arguments.iter().position(|o| has_naming_conflict(binding_index, o, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)).is_some()
     }
   }
 }
+
 
 /// Name-preserving conversion of a deBruijn-based AST into an identifier-based AST.
 ///
@@ -1417,16 +1381,22 @@ fn resolve_name_ambiguity (
   binders_from_root : &mut Vec<Binder>
   ) -> ast::Abs<Identifier>
 {
-  // Assign permanent bound variable name to the lambda node, one at a time
   let new_binding_names = binder_node.bound_variables.clone();
 
   let l = new_binding_names.len();
 
   binders_from_root.push(new_binding_names);
 
+  // Assign permanent bound variable name to the lambda node, one at a time
   for binder_name_index in 0..l {
 
-    let name_already_used_above = | suggested_name:&Identifier | {
+    // Determine if a specified identifer is already used in any lambda abstraction
+    // 'above' the current binding (at index `binder_name_index` in `binders_from_root.last()`).
+    //
+    // Since in our AST lambda nodes can abstract multiple variable at once, here `above`
+    // means either in a lambda node sitting above the current binder `binders_from_root.last()`
+    // or in the same binder node but before `binder_name_index`.
+    let name_already_declared_above = | suggested_name:&Identifier | {
       if free_variable_indices.contains(&suggested_name) {
         // there exists a free variable with the same name
         true
@@ -1453,14 +1423,16 @@ fn resolve_name_ambiguity (
     };
 
     let suggested_name = &binder_node.bound_variables[binder_name_index];
-    let potential_conflict = name_already_used_above(suggested_name);
-    if potential_conflict && has_naming_conflict(binder_name_index, &binder_node.body, free_variable_indices, binders_from_root, 1, suggested_name) {
+
+    if name_already_declared_above(suggested_name)
+    && has_naming_conflict(binder_name_index, &binder_node, free_variable_indices, binders_from_root, 0, suggested_name) {
+
       // resolve the conflict by renaming the bound lambda
       let primed_variable_name = &format!("{}'", binder_node.bound_variables[binder_name_index]);
 
       let fresh_name = create_fresh_variable(
                           primed_variable_name,
-                          &name_already_used_above);
+                          &name_already_declared_above);
 
       binders_from_root.last_mut().unwrap()[binder_name_index] = fresh_name;
     } else {
@@ -1468,11 +1440,9 @@ fn resolve_name_ambiguity (
     }
   }
 
-  let converted_node = ast::Abs {
-    bound_variables: binders_from_root.last_mut().unwrap().clone(),
-    body:
-      // create the body of the lambda node with name assigned to all variable occurrences
-      match &binder_node.body {
+  let converted_body =
+    // create the body of the lambda node with name assigned to all variable occurrences
+    match &binder_node.body {
       ast::AppOrVar::App(binder_body_app) => {
         ast::AppOrVar::App(Rc::new(ast::App{
           operator: Rc::new(resolve_name_ambiguity(&binder_body_app.operator, free_variable_indices, binders_from_root)),
@@ -1486,15 +1456,17 @@ fn resolve_name_ambiguity (
           }
         ))
       }
-    }
-  };
+    };
 
-  binders_from_root.pop();
-
-  converted_node
+  ast::Abs {
+    bound_variables: binders_from_root.pop().unwrap(),
+    body: converted_body
+  }
 
 }
 
+/// Evaluate and readout the normal form of a lambda term with variable identifier
+/// fully resolved and print out the resulting term
 pub fn evaluate_resolve_print_normal_form(term: &ast::Abs<Identifier>) {
   let mut free_variable_indices = Vec::new();
   let readout = evaluate_and_name_free_readout::<Identifier>(term, &mut free_variable_indices);
@@ -1512,11 +1484,14 @@ mod tests {
   #[test]
   fn test_traversals_enumeration () {
     let p = crate::alt_lambdaterms::TermParser::new();
-    let neil = p.parse(NEIL).unwrap();
 
 
     println!("===== Enumerating all traversals");
+    let neil = p.parse(NEIL).unwrap();
     super::evaluate::<String>(&neil);
+
+    let varity_two = p.parse(VARITY_TWO).unwrap();
+    super::evaluate::<String>(&varity_two);
   }
 
 
@@ -1534,7 +1509,8 @@ mod tests {
 
     let omega = p.parse(OMEGA).unwrap();
     println!("Traversing {}", super::pretty_print::format_lambda_term(&omega, &Vec::new(), false));
-    //// Don't do this!
+
+    //// Don't do this, it will run literally forever!
     // super::evaluate_and_print_normal_form(omega)
   }
 

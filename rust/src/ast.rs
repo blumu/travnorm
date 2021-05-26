@@ -20,7 +20,7 @@ pub mod standard {
   pub type App<T> = (Box<Term<T>>, Box<Term<T>>);
 
   pub enum Term<T> {
-      Variable(Var<T>),
+      Var(Var<T>),
       App(App<T>),
       Abs(Abs<T>)
   }
@@ -44,7 +44,7 @@ pub mod standard {
 ///    It could be just the variable name itself (referring to a free variable or a name declared in another lambda node)
 ///    or any other pointer encoding (e.g. DeBruijn index,...)
 
-pub mod alternating_rc {
+pub mod alternating {
   use std::rc::Rc;
 
   #[derive(Clone)]
@@ -73,6 +73,6 @@ pub mod alternating_rc {
 
   pub type Term<T> = Abs<T>;
 
-  pub type LambdaTerm = Term<String>;
+  pub type LambdaTerm = Term<super::Identifier>;
 
 }

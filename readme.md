@@ -1,18 +1,53 @@
 
 # Evaluating untyped lambda terms via traversals
 
-This is a TypeScript implementation of the paper [Reducing Lambda Terms with Traversals (draft)](https://arxiv.org/abs/1802.10583)
-The final paper is being finalized for publication in TCS.
+This project hosts implementations in TypeScript and Rust of lambda calculus term evaluation algorithm from the TCS paper [Evaluating lambda terms with traversals](https://www.sciencedirect.com/science/article/abs/pii/S0304397519305316).
 
-## Other implementations
+## Updates
 
-- **OCaml/F#** implementation with GUI available [https://github.com/blumu/dphil.tools/tree/master/HOG](here)
-This is based on a tool I wrote back in 2008 for my DPhil thesis.
-(Traversal enumeration only, does not implement the name-resolution readout from the paper)
+- May 2021, Added Rust implementation
+- June 2019, TypeScript implementation
+- Jan-April 2018, Ocaml/F# implemention for untyped lambda calculus in [https://github.com/blumu/dphil.tools/tree/master/HOG](HOG)
+- 2008, Original Ocaml/F# implementation of traversals for simply-typed terms (without automated readout)
 
-## Examples
 
-### Enumerating all traversals
+## TypeScript implementation
+
+### Installation and usage
+
+After cloning the git repository install nodejs and TypeScript (tested with TypeScript 4.2.4.)
+
+```cmd
+npm install -D typescript
+```
+
+Build the TypeScript sources with:
+
+```cmd
+tsc
+```
+
+Run all tests with:
+
+```cmd
+node out\all_tests.js
+```
+
+In the TypeScript implementation, lambda terms are defined in the code using combinators, for instance:
+
+```ts
+let varity =
+  abs(['t'], app('t', [abs(['n', 'a', 'x'], app('n', abs(['s', 'z'], app('a', [app('s'), app('x', [app('s'), app('z')])])))),
+  abs(['a'], 'a'),
+  abs(['z0'], 'z0')
+  ]))
+let two = abs(['s2', 'z2'], app('s2', app('s2', 'z2')))
+let varity_two = app(varity, two)
+```
+
+See `all_tests.ts` for more examples.
+
+### Example: Enumerating all traversals
 
 `(lambda u.u (x u))(lambda v.v y)`
 
@@ -28,7 +63,7 @@ This is based on a tool I wrote back in 2008 for my DPhil thesis.
   |               projection:[]--x(1,1)--$[](1,2)--y(3,2)
 ```
 
-### Evaluation with name-preserving resolution
+### Examples: Evaluation with name-preserving resolution
 
 #### `(lambda u.u (x u))(lambda v.v y)`
 
@@ -55,7 +90,7 @@ Evaluating (lambda t.t (lambda n a x.n (lambda s z.a s (x s z))) (lambda a.a) (l
 lambda x x' s z.s (x s (x' s z))
 ```
 
-## Some raw ideas for future improvements
+### Some raw ideas for future improvements
 
 - If named-readout is not needed (i.e. the deBruijn AST suffices) then the algorithm fits in about 500 LOC
 - A justification pointer is not needed for free variable occurrences. The reference to the tree node alone suffices.
@@ -65,19 +100,36 @@ lambda x x' s z.s (x s (x' s z))
 - Implementing traversals using (shared) linked-lists could help save on memory by avoiding array copy at each recursive call.
   Justification pointers could also be implemented using memory pointers instead of array index/deltas.
 
-## Manual
+## Rust implementation
+### Installation and usage
 
-### Install dependencies
+After cloning the git repository install [Rust](https://www.rust-lang.org/learn/get-started) and run `cargo build` and `cargo test`.
 
-Install nodejs and typescript.
-(The project was tested with TypeScript 4.2.4.)
-
-```cmd
-npm install -D typescript
-```
-
-Running all tests:
+The Rust version features a parser implemented using LALRPOP. The user
+provides the input lambda term as a string argument to the program. For instance:
 
 ```cmd
-node out\all_tests.js
+cd rust
+cargo run "(λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))"
 ```
+
+Output:
+
+```text
+Running `target\debug\travnorm.exe "(λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))"`
+
+Parsing lambda term (λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))
+term has length 26
+===== Evaluation without name resolution
+Evaluating (\lambda t.t (\lambda n a x.n (\lambda s z.a s (x s z))) (\lambda a.a) (\lambda z0.z0))(\lambda s2 z2.s2 (s2 z2))
+\lambda x x s z.s(1,3) (x(3,1) s(5,3) (x(5,2) s(7,3) z(7,4)))
+===== Evaluation with name resolution
+Evaluating (\lambda t.t (\lambda n a x.n (\lambda s z.a s (x s z))) (\lambda a.a) (\lambda z0.z0))(\lambda s2 z2.s2 (s2 z2))
+\lambda x x' s z.s (x s (x' s z))
+```
+
+## Other implementations
+
+- **OCaml/F#** implementation with GUI available [https://github.com/blumu/dphil.tools/tree/master/HOG](here)
+This is based on a tool I wrote back in 2008 for my DPhil thesis.
+It performs full traversal enumeration and core projections from which the term AST can be reconstructed. It does not implement the conflict avoiding name-resolution readout algorithm from the paper.
