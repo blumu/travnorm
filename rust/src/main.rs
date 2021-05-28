@@ -10,31 +10,88 @@ pub mod traversal;
 
 pub mod term;
 
-use crate::term::{HasLength};
 use std::env;
+use std::io::{self, BufRead};
+use crate::term::{HasLength};
 
 #[cfg(test)]
 mod parser_tests;
 
+struct Commands {
+    enumerate : bool,
+    normalize : bool,
+    normalize_resolve : bool
+}
+
+fn usage(exe_path : &str) {
+    println!("Syntax:");
+    println!("  {} [--enumerate|--normalize|--normalize_resolve] -", exe_path);
+    println!("  {} [--enumerate|--normalize|--normalize_resolve] \"<lambda term>\"", exe_path);
+    println!("Pass '-' as a parameter to read from the lambda term from standard input. ");
+    println!("Pass a lambda term in double-quotes to read the lambda term from the command-line arguments. ")
+}
+
+fn usage_and_exit(exe_path : &str) -> ! {
+  usage(&exe_path);
+  std::process::exit(1);
+}
+
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let mut args: Vec<String> = env::args().collect();
 
-    let sample_term =
-        //r"(λu.u(x u))(λv.v y)"
-        r"(λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))"
-        //r"(λ x . x y) (λ z . z w)"
-        ;
+    let exe_path = args.remove(0);
 
-    let t_as_string : &str=
-        if args.len() > 1 {
-            &args[1]
-        } else {
-            sample_term
+    let mut commands = Commands {
+            enumerate : false,
+            normalize : false,
+            normalize_resolve : false
         };
 
-    println!("Parsing lambda term {}", t_as_string);
+    while !args.is_empty() {
+        match args.first() {
+            None => break,
+            Some(arg) if arg.starts_with("--enumerate") => commands.enumerate = true,
+            Some(arg) if arg.starts_with("--normalize") => commands.normalize = true,
+            Some(arg) if arg.starts_with("--normalize_resolve") => commands.normalize_resolve = true,
+            Some(arg) if arg.starts_with("--") => {
+                eprintln!("Unrecognized switch: {}", arg);
+                usage_and_exit(&exe_path);
+            },
+            _ => break
+        };
+        args.remove(0);
+    }
 
-    let parsed = alt_lambdaterms::TermParser::new().parse(t_as_string);
+    if !commands.normalize_resolve
+    && !commands.enumerate
+    && !commands.normalize  {
+        println!("No command specified, defaulting to normalization with name resolution.");
+        commands.normalize_resolve = true
+    }
+
+    let t_as_string =
+        match args.first() {
+            None => {
+                println!("Reading input lambda term from standard input");
+                let stdin = io::stdin();
+                let line = stdin.lock()
+                    .lines()
+                    .next()
+                    .expect("there was no next line")
+                    .expect("the line could not be read");
+                line
+            }
+            Some(term_arg) => {
+                println!("Reading input lambda term from command-line argument");
+                term_arg.to_owned()
+
+            }
+        };
+
+
+    println!("Parsing lambda term '{}'", &t_as_string);
+
+    let parsed = alt_lambdaterms::TermParser::new().parse(&t_as_string);
 
     match parsed {
         Err(e) =>
@@ -45,11 +102,19 @@ fn main() {
             let n = term.length();
             println!("term has length {}", n);
 
-            println!("===== Evaluation without name resolution");
-            traversal::evaluate_and_print_normal_form(&term);
+            if commands.enumerate {
+                println!("===== Enumerate all traversals");
+                traversal::enumerate_all_traversals(&term);
+            }
+            if commands.normalize {
+                println!("===== Evaluation without name resolution");
+                traversal::evaluate_and_print_normal_form(&term);
+            }
 
-            println!("===== Evaluation with name resolution");
-            traversal::evaluate_resolve_print_normal_form(&term);
+            if commands.normalize_resolve {
+                println!("===== Evaluation with name resolution");
+                traversal::evaluate_resolve_print_normal_form(&term);
+            }
 
         }
     }

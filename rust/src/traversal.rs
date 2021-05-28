@@ -691,7 +691,7 @@ fn format_occurrence<T : ToString>(
       format!("[{}]{}", as_string_list(&node.bound_variables).join(" "), format_pointer(&j.pointer)),
 
     TermBranching::Abs(Generalized::Ghost(jo)) =>
-      format!("$[{:?}]{:?}", jo.node.bound_variables, format_pointer(&jo.j.pointer)),
+      format!("$[{}]{}", as_string_list(&jo.node.bound_variables).join(" "), format_pointer(&jo.j.pointer)),
 
     TermBranching::Var(Generalized::Structural(v)) =>
     {
@@ -905,7 +905,9 @@ fn traverse_next_strand<T : Clone + ToString + BinderLocator<T>>(
   next
 }
 
-fn enumerate_all_traversals<T: Clone + ToString + BinderLocator<T>>(
+/// Enumerate and print all the traversals of a lambda term term
+/// starting from a given incomplete traversal prefix `t`
+fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
   tree_root: &ast::Abs<T>,
   t: &mut JustSeq<T>,
   free_variable_indices: &mut Vec<Identifier>,
@@ -916,9 +918,10 @@ fn enumerate_all_traversals<T: Clone + ToString + BinderLocator<T>>(
 
   match traverse_next_strand(tree_root, t, free_variable_indices) {
     Extension::None => {
-      println!("{}|Depth:{}|Maximal traversal:{}",
+      println!("{}|Depth:{}|Length:{}|Maximal traversal:{}",
           log_indent,
           depth,
+          t.len(),
           format_sequence(t, free_variable_indices));
 
       let mut p : Vec<Occurrence<T>> = core_projection(t, free_variable_indices).collect();
@@ -951,14 +954,13 @@ fn enumerate_all_traversals<T: Clone + ToString + BinderLocator<T>>(
           log_indent, depth,
           label, // node_occurrence_choices all have a pointer
           format_sequence(t, free_variable_indices),
-          format_occurrence(t, t.len(), free_variable_indices));
-        enumerate_all_traversals(tree_root, t, free_variable_indices, depth+1);
+          format_occurrence(t, t.len()-1, free_variable_indices));
+        }
+        enumerate_all_traversals_from(tree_root, t, free_variable_indices, depth+1);
         t.truncate(before_length);
-       }
       }
     }
-  };
-
+  }
 }
 
 
@@ -1096,7 +1098,7 @@ mod pretty_print {
       }
     } else {
       Pretty {
-        pretty_printed: format!(r"\lambda {}.{}", abs_term.bound_variables.join(" "), body_print.pretty_printed),
+        pretty_printed: format!(r"λ {}.{}", abs_term.bound_variables.join(" "), body_print.pretty_printed),
         must_bracket_if_argument: true
       }
     }
@@ -1105,11 +1107,11 @@ mod pretty_print {
 }
 
 /// Enumerate all the traversals of a lambda term term
-pub fn evaluate<T : Clone + ToString + NameLookup + BinderLocator<T>>(
+pub fn enumerate_all_traversals<T : Clone + ToString + NameLookup + BinderLocator<T>>(
   term: &ast::Term<T>
 ) {
   println!("Traversing {}", pretty_print::format_lambda_term(term, &Vec::new(), false));
-  enumerate_all_traversals(term, &mut Vec::new(), &mut Vec::new(), 0)
+  enumerate_all_traversals_from(term, &mut Vec::new(), &mut Vec::new(), 0)
 }
 
 /// A deBruijn-like encoding where the name of a variable occurrence
@@ -1471,7 +1473,7 @@ pub fn evaluate_resolve_print_normal_form(term: &ast::Abs<Identifier>) {
   let mut free_variable_indices = Vec::new();
   let readout = evaluate_and_name_free_readout::<Identifier>(term, &mut free_variable_indices);
   let resolved_name_readout = resolve_name_ambiguity(&readout, &free_variable_indices, &mut Vec::new());
-  println!("{}", pretty_print::format_lambda_term(&resolved_name_readout, &free_variable_indices, false))
+  println!("Normalized term: {}", pretty_print::format_lambda_term(&resolved_name_readout, &free_variable_indices, false))
 }
 
 
@@ -1488,10 +1490,10 @@ mod tests {
 
     println!("===== Enumerating all traversals");
     let neil = p.parse(NEIL).unwrap();
-    super::evaluate::<String>(&neil);
+    super::enumerate_all_traversals::<String>(&neil);
 
     let varity_two = p.parse(VARITY_TWO).unwrap();
-    super::evaluate::<String>(&varity_two);
+    super::enumerate_all_traversals::<String>(&varity_two);
   }
 
 
