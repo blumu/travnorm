@@ -7,7 +7,7 @@ This project hosts implementations in TypeScript and Rust of lambda calculus ter
 
 - May 2021, Added Rust implementation
 - June 2019, TypeScript implementation
-- Jan-April 2018, Ocaml/F# implemention for untyped lambda calculus in [https://github.com/blumu/dphil.tools/tree/master/HOG](HOG)
+- Jan-April 2018, Ocaml/F# implemention for untyped lambda calculus in [https://github.com/blumu/dphil.tools/tree/master/HOG](https://github.com/blumu/dphil.tools/tree/master/HOG)
 - 2008, Original Ocaml/F# implementation of traversals for simply-typed terms (without automated readout)
 
 
@@ -148,10 +148,10 @@ Parsing lambda term '(λ u.u (x u))(λ v.v y)'
 term has length 12
 ===== Enumerate all traversals
 Traversing (λ u.u (x u))(λ v.v y)
-    |Depth:2|Length:18|Maximal traversal:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--[](1,1)--u(7,1)--[v](9,1)--v(1,1)--$[](3,1)--#(5,1)--$[](1,1)--#(3,1)--[](5,1)--y(17,2)
-    |               projection:[]--x(1,1)--[v](1,1)--#(1,1)--$[](1,1)--y(5,2)
-  |Depth:1|Length:12|Maximal traversal:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--$[](1,2)--#(3,1)--[](5,1)--y(11,2)
-  |               projection:[]--x(1,1)--$[](1,2)--y(3,2)
+    |Depth:2|Length:18|Maximal traversal:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--[](1,1)--u(7,1)--[v](9,1)--v(1,1)--{}(3,1)--#(5,1)--{}(1,1)--#(3,1)--[](5,1)--y(17,2)
+    |               projection:[]--x(1,1)--[v](1,1)--#(1,1)--{}(1,1)--y(5,2)
+  |Depth:1|Length:12|Maximal traversal:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--{}(1,2)--#(3,1)--[](5,1)--y(11,2)
+  |               projection:[]--x(1,1)--{}(1,2)--y(3,2)
 ```
 
 ### Examples
@@ -175,5 +175,5 @@ Evaluating (\lambda a.a (\lambda b c.c (\lambda d e f.f) (\lambda d e.d) (\lambd
 
 ## Other implementations
 
-- An **OCaml/F#** implementation with GUI available [https://github.com/blumu/dphil.tools/tree/master/HOG](here).
+- An **OCaml/F#** implementation with GUI available [here](https://github.com/blumu/dphil.tools/tree/master/HOG).
 I originally wrote this tool back in 2008 for my DPhil thesis for the simply-typed lambda calculus and higher-order grammars. In 2018 I added the traversal implementation for the untyped lambda calculus. The tools lets you perform a full traversal enumeration with core projections from which the term AST can be reconstructed, though it does not implement the conflict avoiding name-resolution readout from the paper.

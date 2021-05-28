@@ -691,7 +691,7 @@ fn format_occurrence<T : ToString>(
       format!("[{}]{}", as_string_list(&node.bound_variables).join(" "), format_pointer(&j.pointer)),
 
     TermBranching::Abs(Generalized::Ghost(jo)) =>
-      format!("$[{}]{}", as_string_list(&jo.node.bound_variables).join(" "), format_pointer(&jo.j.pointer)),
+      format!("{{{}}}{}", as_string_list(&jo.node.bound_variables).join(" "), format_pointer(&jo.j.pointer)),
 
     TermBranching::Var(Generalized::Structural(v)) =>
     {
@@ -855,9 +855,7 @@ impl<'a, T : Clone + ToString> Iterator for CoreProjection<'a, T> {
           }
 
           if self.pending_lambdas.len() >= arity {
-            let remaining_lambdas = self.pending_lambdas.len() - arity;
-            self.pending_lambdas.rotate_left(arity);
-            self.pending_lambdas.truncate(remaining_lambdas)
+            self.pending_lambdas.drain(0..arity);
           } else {
             self.pending_lambdas.clear();
           }
