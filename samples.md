@@ -13,9 +13,10 @@ set comp=λg f. λx. g (f x)
 set sa=λx. x x
 set zero=λ s z. z
 set one=λ s z. s z
-set twice=λs z. s(s x)
+set twice=λs z. s(s z)
 set thrice=λs z. s(s(s z))
 set four=λs z. s(s(s(s z)))
+set five=λs z. s(s(s(s(s z))))
 set Y=(λx. t (x x)) (λx. t (x x))
 set fib=λa.a (λ b c. c (λ d e f.f) (λ d e. d) (λ d e. d e) (λ d e. b (λ f g. c (λ h i. i (h f)) (λh.g) (λh.h)) d (b (λ f g. c(λ h i.i (h (λ j k. k (j f)))) (λh i.g) (λ h.h)(λ h.h)) d e))) (λ b c.c) a
 

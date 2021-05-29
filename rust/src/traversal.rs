@@ -6,7 +6,6 @@ use crate::traversal::TermBranching::{Abs, Var, App};
 use crate::traversal::Generalized::{Structural, Ghost};
 
 use crate::ast::{ alternating as ast, Identifier };
-use std::cmp;
 use std::rc::Rc;
 
 // if true then print additional logging
@@ -17,6 +16,10 @@ const VERY_VERBOSE :bool = false;
 
 // if true then print additional debugging information
 const DEBUG :bool = false;
+
+// Experimental: compress traversals by skipping consecutive occurrences of internal ghost nodes
+// traversed with the two copy-cat rules.
+const PUMP_COPYCAT_GHOSTS :bool = true;
 
 
 ////////// Justified sequences
@@ -41,19 +44,13 @@ pub enum Generalized<S, G> {
   Ghost(G)
 }
 
-/// A generalized lambda node is either
-/// - a structural lambda node
-/// - a ghost lambda  node
-type GeneralizedAbsNode<T> = Generalized<Rc<ast::Abs<T>>, Rc<GhostAbsNode>>;
-
-
 /// A justification pointer
 #[derive(Clone, Copy)]
 pub struct Pointer {
   /// distance from the justifier in the sequence
   distance : usize,
   /// and pointer's label
-  label : isize
+  label : usize
 }
 
 /// Node scope
@@ -230,7 +227,7 @@ impl<T> HasScope for Occurrence<T> {
 
 /// State of a P-view iterator
 pub struct PviewIteration<'a, T> {
-  current_pos : i32,
+  current_pos : Option<usize>,
   t: &'a JustSeq<T>,
 }
 
@@ -239,31 +236,30 @@ impl<'a, T: Clone> Iterator for PviewIteration<'a, T> {
   type Item = (Occurrence<T>, usize);
 
   fn next(&mut self) -> Option<(Occurrence<T>, usize)> {
-    let i = self.current_pos;
+    match self.current_pos {
+      None => None,
+      Some(i) => {
+        let last_occurrence : &Occurrence<T> = &self.t[i];
+        let k =
+          match last_occurrence {
+            TermBranching::Var(_) | TermBranching::App(_)
+              => 1,
 
-    if i>=0 {
-      let last_occurrence : &Occurrence<T> = &self.t[i as usize];
-      let k =
-        match last_occurrence {
-          TermBranching::Var(_) | TermBranching::App(_)
-            => 1,
+            TermBranching::Abs(Generalized::Structural(o)) =>
+              match &o.j {
+                None => return None, // initial node => end of P-view
+                Some(j) => j.pointer.distance,
+              },
 
-          TermBranching::Abs(Generalized::Structural(o)) =>
-            match &o.j {
-              None => return None, // initial node => end of P-view
-              Some(j) => j.pointer.distance,
-            },
+            TermBranching::Abs(Generalized::Ghost(g))
+              => g.j.pointer.distance,
 
-          TermBranching::Abs(Generalized::Ghost(g))
-            => g.j.pointer.distance,
+          };
 
-        };
+        self.current_pos = Some (i - k);
 
-      self.current_pos -= k as i32;
-
-      Some ((last_occurrence.clone(), k))
-    } else {
-      None
+        Some ((last_occurrence.clone(), k))
+      }
     }
   }
 }
@@ -273,7 +269,10 @@ impl<'a, T: Clone> Iterator for PviewIteration<'a, T> {
 /// Return the sequence of occurrence in the P-view (read backwards)
 /// together with the position deltas between consecutive occurrences in the P-view
 fn pview<'a, T>(t: &'a JustSeq<T>) -> PviewIteration<'a, T> {
-  PviewIteration { current_pos : t.len() as i32 -1, t : t}
+  PviewIteration {
+      current_pos : if t.is_empty() { None } else { Some(t.len() - 1) },
+      t : t
+  }
 }
 
 /// Trait used to define the arity of a node or an occurrence
@@ -340,14 +339,19 @@ impl<V:HasArity, L:HasArity, A:HasArity> HasArity for TermBranching<V, L, A> {
   }
 }
 
-/// Dynamic arity of a traversal (ending with an external variable)
+/// Dynamic arity of a traversal.
+/// Pre-condition: The last node in `t` must end with an external variable occurrence
 fn dynamic_arity<T>(t: &JustSeq<T>) -> usize {
-  let mut i :isize = t.len() as isize - 1;
-  let mut sum = t[i as usize].arity() as isize;
-  let mut max : isize = sum;
-  i = i-1;
-  while i >= 0 {
-    let o = &t[i as usize];
+  if t.is_empty() {
+    panic!("Cannot compute dynamic arity of an empty traversal")
+  }
+
+  let mut i = t.len();
+  let mut sum : isize = 0;
+  let mut max = sum;
+
+  while i >= 1 {
+    let o = &t[i-1];
     match o {
       TermBranching::Abs(_) if o.scope() == Scope::External =>
         return max as usize,
@@ -357,87 +361,81 @@ fn dynamic_arity<T>(t: &JustSeq<T>) -> usize {
 
       TermBranching::Var(_) | TermBranching::App(_) => {
         sum += o.arity() as isize;
-        max = cmp::max(sum, max)
+        if sum > max {
+          max = sum
+        }
       }
     }
-    i = i-1;
+    i = i-1
   };
+
   max as usize
 }
 
-/// Ability to instantiate (possibly fictitious) children nodes
-trait OnTheFlyChildren<ChildrenType> {
-  fn get_or_create_child(&self, child_index: usize) -> ChildrenType;
+/// Ability to fetch structural children nodes by index
+trait HasChildren<T> {
+  fn try_get_structural_child(&self, child_index: usize) -> Option<Rc<ast::Abs<T>>>;
 }
 
-impl<T> OnTheFlyChildren<GeneralizedAbsNode<T>> for VarOccurrence<T> {
-
-  /// Create a generalized (i.e. possibly fictitious) child node of a variable node
-  /// associated with the variable occurrence
-  /// - `childIndex` the index of the child node to fetch, ranging from
-  ///   1 to arity(x) for a variable-node,
-  fn get_or_create_child(&self, child_index: usize) -> GeneralizedAbsNode<T> {
+impl<T> HasChildren<T> for VarOccurrence<T> {
+  // Return the requested structural child of a variable-node
+  fn try_get_structural_child(&self, child_index: usize) -> Option<Rc<ast::Abs<T>>> {
     match &self {
       Generalized::Structural(occ) if child_index <= occ.arity() =>
-        Generalized::Structural(Rc::clone(&occ.node.arguments[child_index-1])),
-
-      Generalized::Structural(_) |
-      Generalized::Ghost(_) =>
-        Generalized::Ghost (Rc::new(GhostAbsNode { bound_variables: Vec::new() })),
+        Some(Rc::clone(&occ.node.arguments[child_index-1])),
+      Generalized::Structural(_) | Generalized::Ghost(_) => None
     }
   }
 }
 
-impl<T> OnTheFlyChildren<GeneralizedAbsNode<T>> for AppOccurrence<T> {
-  /// Create a generalized (i.e. possibly fictitious) child node of an application node
-  /// associated with the @-occurrence
-  /// - `childIndex` the index of the child node to fetch, ranging from
-  ///   0 to arity(x) for an @-node.///
-  fn get_or_create_child(&self, child_index: usize) -> GeneralizedAbsNode<T> {
+impl<T> HasChildren<T> for AppOccurrence<T> {
+  // Return the requested structural child of an @-node
+  fn try_get_structural_child(&self, child_index: usize) -> Option<Rc<ast::Abs<T>>> {
     if child_index == 0 {
-      Generalized::Structural(Rc::clone(&self.node.operator))
+      Some(Rc::clone(&self.node.operator))
     } else if child_index <= self.arity() {
-      Generalized::Structural(Rc::clone(&self.node.operands[child_index-1]))
+      Some(Rc::clone(&self.node.operands[child_index-1]))
     } else {
-      Generalized::Ghost (Rc::new(GhostAbsNode { bound_variables: Vec::new() }))
+      None
     }
   }
 }
 
-/// Create an occurrence of a child node of a given @/var node occurrence
+/// Create an occurrence of a generalized (i.e. possibly fictitious) child node
+/// of a given @/var node occurrence
 /// Arguments
 /// - `m` occurrence of the parent @ or variable node
-/// - `child_index` child index defining the node to create an occurrence of
+/// - `child_index` the index of the child node to create an occurrence of, ranging from
+///   1 to arity(x) for a variable-node,
+///   0 to arity(x) for an @-node.
 /// - `distance` distance from the created occurrence to the occurrence `m` in the underlying sequence
-fn create_occurrence_of_child_of<O : OnTheFlyChildren<GeneralizedAbsNode<T>> + HasScope, T>(
+fn create_occurrence_of_child_of<O : HasChildren<T> + HasScope, T>(
   m: &O,
   child_index: usize,
   distance: usize
   )
   -> AbsOccurrence<T>
 {
-  match m.get_or_create_child(child_index) {
-    Generalized::Structural(s) =>
+  match m.try_get_structural_child(child_index) {
+    Some(s) =>
       Structural(MaybeJustifiedOccurrence{
         node: Rc::clone(&s),
         j : Some(JustificationWithScope {
-          pointer: Pointer { distance: distance, label: child_index as isize },
+          pointer: Pointer { distance: distance, label: child_index },
           scope: m.scope() // has same scope as parent node
         })
       })
     ,
-    Generalized::Ghost(g) =>
+    None =>
       Ghost(
         JustifiedOccurrence {
-        node: Rc::clone(&g),
+        node: Rc::clone(&Rc::new(GhostAbsNode { bound_variables: Vec::new() })),
         j : JustificationWithScope {
-              pointer: Pointer { distance: distance, label: child_index as isize },
+              pointer: Pointer { distance: distance, label: child_index },
               scope: m.scope() // has same scope as parent node
             }
         }),
   }
-
-
 }
 
 ////////// Traversals
@@ -496,7 +494,7 @@ impl BinderLocator<Identifier> for Identifier {
         TermBranching::Abs(Generalized::Structural(a)) => {
           match a.node.bound_variables.iter().position(|v| v == variable_name) {
             Some(i) =>
-              return Pointer { distance: d, label: i as isize +1 },
+              return Pointer { distance: d, label: i + 1 },
             None => {
                 let inc = match a.j {
                   None => 0,
@@ -517,9 +515,10 @@ impl BinderLocator<Identifier> for Identifier {
     // no binder found: it's a free variable
     Pointer {
       distance: d,
-      label: lookup_or_create_free_variable_index(free_variable_indices, variable_name) as isize }
+      label: lookup_or_create_free_variable_index(free_variable_indices, variable_name) }
   }
 }
+
 
 /// Get the list of possible occurrences opening up a new strand
 /// in a strand-complete traversal
@@ -581,20 +580,71 @@ fn extend_traversal<T : Clone + BinderLocator<T>>(
       Var(var) if last_occurrence.scope() == Scope::Internal => {
           // (Var) copy-cat rule
           let just = &var.pointer();
-          let child_index = just.label as usize;
-          let distance = 2 + just.distance;
+          let mut distance = 2 + just.distance;
+          let mut child_index = just.label;
 
           // Occurrence `m` from the paper, is the node preceding the variable occurrence's justifier.
           // Type assertion: by construction traversal verify alternation therefore m is necessarily a variable occurrence
-          let m = &t[next_index - distance];
+          let mut m = &t[next_index - distance];
 
-          let jo = match m {
+          if PUMP_COPYCAT_GHOSTS {
+
+            // Pump the next consecutive (lambda, variable) pairs of occurrences
+            // until reaching a structural lambda (either external or internal),
+            // an external lambda, or an external variable.
+
+            loop {
+
+              // At each iteration, `m` refers to the justifier of the next lambda occurrence
+
+              if m.scope() == Scope::External {
+                // next occurrence is external
+                // => stop pumping!
+                break
+              }
+
+              if child_index <= m.arity() {
+                // next occurrence is a structural lambda
+                // => stop pumping!
+                break
+              }
+
+              // We perform one look-ahead (traversing the child of the ghost lambda)
+              // to check if the next variable node to traverse is external or internal.
+              //
+              // We've determined so far that the next occurrence after `t` is
+              // a ghost lambda, denoted `{}`, with pointer (child_index, distance).
+              //
+              // With one more look-ahead using the ghost lambda traversal rule we have that
+              // the following occurrence is a ghost variable, denoted `$`
+              // with pointer distance `distance+2` and label `mu.arity() + child_index - m.arity()`
+              //
+              //    t' =  t -- {}(child_index, distance) -- $(mu.arity() + child_index - m.arity(), distance+2)
+              //
+              // where
+              //    - `m` is the justifier of the ghost lambda occurrence in `t`,
+              //    - `mu` is the justifier in `t` of the variable occurrence following the ghost lambda;
+              //       it is located immediately before `m`.
+              let mu = &t[next_index - distance-1];
+
+              if mu.scope() == Scope::External {
+                // next variable occurrence is external
+                // => stop pumping
+                break
+              }
+
+              // pump out the (ghost lambda, internal variable) pair
+              distance += 2;
+              child_index = child_index+ mu.arity() - m.arity();
+              m = &t[next_index - distance];
+             }
+          }
+
+          Extension::Single(Abs(match m {
             TermBranching::App(m_a) => { create_occurrence_of_child_of(m_a, child_index, distance) },
             TermBranching::Var(m_v) => { create_occurrence_of_child_of(m_v, child_index, distance) },
             TermBranching::Abs(_) => panic!("Impossible: a variable's justifier predecessor cannot be an abstraction node occurrence."),
-          };
-
-          Extension::Single(Abs(jo))
+          }))
       }
 
       Var(v) => { // external variable
@@ -637,19 +687,72 @@ fn extend_traversal<T : Clone + BinderLocator<T>>(
       Abs(Generalized::Ghost(g)) => {
         // Traverse the child of the ghost lambda node
         let d = g.j.pointer.distance;
-        let m = &t[last_index-d];
+        let mut m = &t[last_index-d];
 
-        let justifier_distance = d + 2;
-        let mu = &t[next_index - justifier_distance];
-        let i = g.j.pointer.label;
+        let mut justifier_distance = d + 2;
+        let mut mu = &t[next_index - justifier_distance];
+        let mut i = g.j.pointer.label;
         if VERY_VERBOSE { println!("[GhostAbs-arity] m: {}, mu: {}, i: {}", m.arity(), mu.arity(), i); };
+
+        if PUMP_COPYCAT_GHOSTS {
+            // Pump the next consecutive (variable, lambda) pairs of occurrences
+            // until reaching either:
+            //  (i) an external variable
+            //  (ii) an internal variable followed by an external lambda
+            //  (iii) a variable followed by a *structural* lambda (either external or internal).
+
+          loop {
+
+            // At each iteration, `m` refers to the justifier of the lambda occurrence
+            // and `mu` refers to the justifier of the following variable occurrence.
+
+            if mu.scope() == Scope::External {
+              // next variable occurrence is external (i
+              // => stop pumping!
+              break
+            }
+
+            let next_child_index = i + mu.arity() - m.arity();
+
+            // We perform one look-ahead to check if the next lambda node to traverse
+            // is either external or structural.
+            //
+            // We've determined so far that the next occurrence after `t` is
+            // a ghost variable with pointer `(next_child_index, justifier_distance)`.
+            //
+            // One more look-ahead using the variable copy-cat rule shows that
+            // the following occurrence is a lambda node
+            // with pointer `(next_child_index, justifier_distance+2)`
+            // pointing to its justifier `next_m`.
+            let next_m = &t[next_index - justifier_distance-1];
+
+            if next_m.scope() == Scope::External {
+              // next lambda occurrence is external (ii)
+              // => stop pumping
+              break
+            }
+
+            if next_child_index <= next_m.arity() {
+              // next occurrence is a structural lambda (iii)
+              // => stop pumping!
+              break
+            }
+
+            // pump out the (ghost lambda, internal variable) pair
+            justifier_distance += 2;
+            i = next_child_index;
+            m = next_m;
+            mu = &t[next_index - justifier_distance];
+          }
+        }
+
         Extension::Single(Var(
             Generalized::Ghost(
               JustifiedOccurrence {
                 node: Rc::new(GhostVarNode{}),
                 j : JustificationWithScope {
                   pointer : Pointer { distance: justifier_distance,
-                                        label: mu.arity() as isize + i - m.arity() as isize },
+                                        label: mu.arity() + i - m.arity() },
                   scope: mu.scope()
                 }
               }
@@ -697,7 +800,7 @@ fn format_occurrence<T : ToString>(
     {
       let pointer = &v.j.pointer;
 
-      let justifier = &t[index as usize - pointer.distance];
+      let justifier = &t[index - pointer.distance];
       match justifier {
         App(_) | Var(_) => panic!("A variable's justifier can only be an occurrence of a lambda node."),
 
@@ -705,12 +808,12 @@ fn format_occurrence<T : ToString>(
 
         Abs(Generalized::Structural(jo)) => {
           let justifier_bound_variables = &jo.node.bound_variables;
-          let l = pointer.label as usize;
+          let l = pointer.label;
           let name =
             if l <= justifier_bound_variables.len() {
               justifier_bound_variables[l - 1].to_string()
             } else {
-              let free_var_index = (l - 1 - justifier_bound_variables.len()) as usize;
+              let free_var_index = l - 1 - justifier_bound_variables.len();
               if free_var_index < free_variable_indices.len() {
                 free_variable_indices[free_var_index].clone()
               } else {
@@ -881,8 +984,8 @@ fn core_projection<'a, T>(t: &'a JustSeq<T>, free_variable_indices: &'a Vec<Iden
 ///   - `t` the current traversal
 ///   - `tree_root` the root of the term tree
 ///   - `free_variable_indices` the indices of all free variables
-/// Returns an array of all possible next strands, or an empty vector
-/// if the input traversal is complete
+/// Returns an array of all possible next strand openings, or an empty vector
+/// if the input traversal is complete.
 fn traverse_next_strand<T : Clone + ToString + BinderLocator<T>>(
   tree_root:&ast::Abs<T>,
   t:&mut JustSeq<T>,
@@ -894,11 +997,13 @@ fn traverse_next_strand<T : Clone + ToString + BinderLocator<T>>(
 
   while let Extension::Single(o) = next {
     t.push(o); // append the traversed occurrence
-    if VERY_VERBOSE {
-      println!("extended: {}", format_sequence(t, free_variable_indices))
-    }
-    next = extend_traversal(tree_root, t, free_variable_indices)
+
+    if VERY_VERBOSE { println!("extended: {}", format_sequence(t, free_variable_indices)) }
+
+    next = extend_traversal(tree_root, t, free_variable_indices);
   }
+
+  if VERY_VERBOSE { println!("traverse_next_strand completes, l ={}", t.len()) }
 
   next
 }
@@ -1121,7 +1226,7 @@ struct DeBruijnPair {
   // (1 for the parent node, and so on)
   depth: usize,
   // Index of the variable name in the lambda-binder
-  index: isize
+  index: usize
 }
 
 impl NameLookup for DeBruijnPair {
@@ -1135,19 +1240,21 @@ impl NameLookup for DeBruijnPair {
       let binder_bound_variables = &binders_from_root[binder_index];
       let root_bound_variables = &binders_from_root[0];
       let is_bound_by_root = binder_index == 0;
-      let free_variable_index = self.index - root_bound_variables.len() as isize - 1;
 
       let ghost_naming = format!("#({},{})", self.depth, self.index);
 
+      let free_variable_start_index = root_bound_variables.len() + 1;
+
       let variable_name =
-        if is_bound_by_root && free_variable_index >= 0 {
-          &free_variable_indices[free_variable_index as usize]
+        if is_bound_by_root && self.index >= free_variable_start_index {
+          let free_variable_index = self.index - free_variable_start_index;
+          &free_variable_indices[free_variable_index]
         } else {
-          if self.index as usize > binder_bound_variables.len() {
+          if self.index > binder_bound_variables.len() {
             // unresolved ghost variable name (should never happen on core-projected traversals)
             &ghost_naming
           } else {
-            &binder_bound_variables[self.index as usize - 1]
+            &binder_bound_variables[self.index - 1]
           }
         };
 
@@ -1334,7 +1441,7 @@ fn has_naming_conflict (
       let over_arcing_binding =
         v.name.depth > depth_not_to_cross
         || (v.name.depth == depth_not_to_cross
-            && (v.name.index as usize) < current_index_in_current_binder_node);
+            && v.name.index < current_index_in_current_binder_node);
 
       if over_arcing_binding {
         // We found a variable node with over-arcing binding (i.e. binding lambda occurring above binder 'b')

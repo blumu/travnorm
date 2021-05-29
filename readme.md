@@ -7,9 +7,8 @@ This project hosts implementations in TypeScript and Rust of lambda calculus ter
 
 - May 2021, Added Rust implementation
 - June 2019, TypeScript implementation
-- Jan-April 2018, Ocaml/F# implemention for untyped lambda calculus in [https://github.com/blumu/dphil.tools/tree/master/HOG](https://github.com/blumu/dphil.tools/tree/master/HOG)
+- Jan-April 2018, Ocaml/F# implementation for untyped lambda calculus in [https://github.com/blumu/dphil.tools/tree/master/HOG](https://github.com/blumu/dphil.tools/tree/master/HOG)
 - 2008, Original Ocaml/F# implementation of traversals for simply-typed terms (without automated readout)
-
 
 ## TypeScript implementation
 
