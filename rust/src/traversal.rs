@@ -8,19 +8,32 @@ use crate::traversal::Generalized::{Structural, Ghost};
 use crate::ast::{ alternating as ast, Identifier };
 use std::rc::Rc;
 
-// if true then print additional logging
-const VERBOSE :bool = false;
+/// Configuration options
+pub struct Configuration {
+  // if true then print additional logging
+  pub verbose :bool,
 
-// if true print traversal after every single extension
-const VERY_VERBOSE :bool = false;
+  // if true print traversal after every single extension
+  pub very_verbose :bool,
 
-// if true then print additional debugging information
-const DEBUG :bool = false;
+  // if true then print additional debugging information
+  pub debug :bool,
 
-// Experimental: compress traversals by skipping consecutive occurrences of internal ghost nodes
-// traversed with the two copy-cat rules.
-const PUMP_COPYCAT_GHOSTS :bool = true;
+  // Produce shorter traversals by pumping out consecutive occurrences of
+  // copy-cat internal ghost nodes when extending a traversal
+  pub pump_out_copycat_ghosts :bool
+}
 
+impl Configuration {
+    pub fn default() -> Self {
+        Configuration {
+          verbose : false,
+          very_verbose : false,
+          debug : false,
+          pump_out_copycat_ghosts : true
+        }
+    }
+}
 
 ////////// Justified sequences
 
@@ -543,10 +556,12 @@ fn new_strand_opening_occurrences<T>(
 /// to traverse, or just void if the traversal is maximal
 ///
 /// Arguments:
+///   - `config` traversal configuration options
 ///   - `t` the current traversal
 ///   - `tree_root` the root of the term tree
 ///   - `free_variable_indices` vector with names of newly created free variables
 fn extend_traversal<T : Clone + BinderLocator<T>>(
+  config: &Configuration,
   tree_root: &ast::Abs<T>,
   t: &JustSeq<T>,
   free_variable_indices: &mut Vec<Identifier>
@@ -587,7 +602,7 @@ fn extend_traversal<T : Clone + BinderLocator<T>>(
           // Type assertion: by construction traversal verify alternation therefore m is necessarily a variable occurrence
           let mut m = &t[next_index - distance];
 
-          if PUMP_COPYCAT_GHOSTS {
+          if config.pump_out_copycat_ghosts {
 
             // Pump the next consecutive (lambda, variable) pairs of occurrences
             // until reaching a structural lambda (either external or internal),
@@ -692,9 +707,9 @@ fn extend_traversal<T : Clone + BinderLocator<T>>(
         let mut justifier_distance = d + 2;
         let mut mu = &t[next_index - justifier_distance];
         let mut i = g.j.pointer.label;
-        if VERY_VERBOSE { println!("[GhostAbs-arity] m: {}, mu: {}, i: {}", m.arity(), mu.arity(), i); };
+        if config.very_verbose { println!("[GhostAbs-arity] m: {}, mu: {}, i: {}", m.arity(), mu.arity(), i); };
 
-        if PUMP_COPYCAT_GHOSTS {
+        if config.pump_out_copycat_ghosts {
             // Pump the next consecutive (variable, lambda) pairs of occurrences
             // until reaching either:
             //  (i) an external variable
@@ -847,6 +862,8 @@ fn format_sequence<T: ToString>(
 
 /// State of the core projection iteration
 struct CoreProjection<'a, T> {
+  /// Configuration options
+  config : &'a Configuration,
   /// The input traversal
   t: &'a JustSeq<T>,
   /// index to name mapping for all free variables
@@ -951,7 +968,7 @@ impl<'a, T : Clone + ToString> Iterator for CoreProjection<'a, T> {
           // pop arity(o) elements from the left of the array
           let arity = o.arity();
 
-          if DEBUG {
+          if self.config.debug {
             println!("t:{} | o: {} | arity: {} | pending lambdas: {:?}",
               format_sequence(&self.t, &self.free_variable_indices),
               format_occurrence(&self.t, i, &self.free_variable_indices), arity, self.pending_lambdas);
@@ -969,8 +986,9 @@ impl<'a, T : Clone + ToString> Iterator for CoreProjection<'a, T> {
 }
 
 /// Return an iterator over the core projection of a traversal
-fn core_projection<'a, T>(t: &'a JustSeq<T>, free_variable_indices: &'a Vec<Identifier>) -> CoreProjection<'a, T> {
+fn core_projection<'a, T>(config : &'a Configuration, t: &'a JustSeq<T>, free_variable_indices: &'a Vec<Identifier>) -> CoreProjection<'a, T> {
   CoreProjection {
+    config : config,
     pending_lambdas : Vec::new(),
     t : t,
     free_variable_indices : free_variable_indices,
@@ -981,29 +999,31 @@ fn core_projection<'a, T>(t: &'a JustSeq<T>, free_variable_indices: &'a Vec<Iden
 /// Traverse the next strand of a term from a given traversal.
 ///
 /// Arguments:
+///   - `config` traversal configuration options
 ///   - `t` the current traversal
 ///   - `tree_root` the root of the term tree
 ///   - `free_variable_indices` the indices of all free variables
 /// Returns an array of all possible next strand openings, or an empty vector
 /// if the input traversal is complete.
 fn traverse_next_strand<T : Clone + ToString + BinderLocator<T>>(
+  config: &Configuration,
   tree_root:&ast::Abs<T>,
   t:&mut JustSeq<T>,
   free_variable_indices: &mut Vec<String>
 ) -> Extension<T>
  {
 
-  let mut next = extend_traversal(tree_root, t, free_variable_indices);
+  let mut next = extend_traversal(config, tree_root, t, free_variable_indices);
 
   while let Extension::Single(o) = next {
     t.push(o); // append the traversed occurrence
 
-    if VERY_VERBOSE { println!("extended: {}", format_sequence(t, free_variable_indices)) }
+    if config.very_verbose { println!("extended: {}", format_sequence(t, free_variable_indices)) }
 
-    next = extend_traversal(tree_root, t, free_variable_indices);
+    next = extend_traversal(config, tree_root, t, free_variable_indices);
   }
 
-  if VERY_VERBOSE { println!("traverse_next_strand completes, l ={}", t.len()) }
+  if config.very_verbose { println!("traverse_next_strand completes, l ={}", t.len()) }
 
   next
 }
@@ -1011,15 +1031,17 @@ fn traverse_next_strand<T : Clone + ToString + BinderLocator<T>>(
 /// Enumerate and print all the traversals of a lambda term term
 /// starting from a given incomplete traversal prefix `t`
 fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
+  config: &Configuration,
   tree_root: &ast::Abs<T>,
   t: &mut JustSeq<T>,
   free_variable_indices: &mut Vec<Identifier>,
   depth:usize
-) {
+) -> usize {
 
   let log_indent = "  ".repeat(depth);
+  let mut max_traversal_length = t.len();
 
-  match traverse_next_strand(tree_root, t, free_variable_indices) {
+  match traverse_next_strand(config, tree_root, t, free_variable_indices) {
     Extension::None => {
       println!("{}|Depth:{}|Length:{}|Maximal traversal:{}",
           log_indent,
@@ -1027,7 +1049,7 @@ fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
           t.len(),
           format_sequence(t, free_variable_indices));
 
-      let mut p : Vec<Occurrence<T>> = core_projection(t, free_variable_indices).collect();
+      let mut p : Vec<Occurrence<T>> = core_projection(config, t, free_variable_indices).collect();
       p.reverse();
 
       println!("{}|      {}        projection:{}",
@@ -1043,7 +1065,7 @@ fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
     // previous occurrence is an external variable with multiple non-deterministic choices
     // of children lambda nodes for the next occurrence
     Extension::ChoiceOfLambdas(node_occurrence_choices) => {
-      if VERBOSE { println!("{}|Depth:{}|External variable reached with {} branch(es): {}",
+      if config.verbose { println!("{}|Depth:{}|External variable reached with {} branch(es): {}",
         log_indent,
         depth,
         node_occurrence_choices.len(),
@@ -1053,17 +1075,21 @@ fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
         let label = o.may_pointer().unwrap().label;
         let before_length = t.len();
         t.push(Abs(o));
-        if VERBOSE { println!("{}|Depth:{}|Choice:{}|Traversal: {}|Occurrence: {}",
+        if config.verbose { println!("{}|Depth:{}|Choice:{}|Traversal: {}|Occurrence: {}",
           log_indent, depth,
           label, // node_occurrence_choices all have a pointer
           format_sequence(t, free_variable_indices),
           format_occurrence(t, t.len()-1, free_variable_indices));
         }
-        enumerate_all_traversals_from(tree_root, t, free_variable_indices, depth+1);
+        let max_length = enumerate_all_traversals_from(config, tree_root, t, free_variable_indices, depth+1);
+        if max_length > max_traversal_length {
+          max_traversal_length = max_length
+        }
         t.truncate(before_length);
       }
     }
   }
+  max_traversal_length
 }
 
 
@@ -1211,10 +1237,13 @@ mod pretty_print {
 
 /// Enumerate all the traversals of a lambda term term
 pub fn enumerate_all_traversals<T : Clone + ToString + NameLookup + BinderLocator<T>>(
+  config: &Configuration,
   term: &ast::Term<T>
 ) {
   println!("Traversing {}", pretty_print::format_lambda_term(term, &Vec::new(), false));
-  enumerate_all_traversals_from(term, &mut Vec::new(), &mut Vec::new(), 0)
+  let l = enumerate_all_traversals_from(config, term, &mut Vec::new(), &mut Vec::new(), 0);
+  println!("longest traversal {}", l);
+
 }
 
 /// A deBruijn-like encoding where the name of a variable occurrence
@@ -1277,21 +1306,25 @@ impl NameLookup for DeBruijnPair {
 ///
 /// Arguments:
 /// ----------
+/// - `config` traversal configuration
 /// - `root` the root of the term tree
 /// - `t`: a strand-complete traversal of the tree
 /// - `free_variable_indices` free variable name to index table
 /// - `depth` node depth of the last node in the traversal
+///
+/// Returns the normalized term with the length of the longest traversal.
 fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
+    config: &Configuration,
     root:&ast::Term<T>,
     mut t: &mut JustSeq<T>,
     free_variable_indices: &mut Vec<Identifier>,
     depth: u32
-) -> ast::Abs<DeBruijnPair> {
+) -> (ast::Abs<DeBruijnPair>, usize) {
 
-  traverse_next_strand(root, &mut t, free_variable_indices);
+  traverse_next_strand(config, root, &mut t, free_variable_indices);
 
   // get the last two nodes from the core projection
-  let mut p = core_projection(t, free_variable_indices);
+  let mut p = core_projection(config, t, free_variable_indices);
 
   // The strand ends with an external variable, call it x
   if let Some(Var(strand_end_var)) = p.next() {
@@ -1299,7 +1332,7 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
     if let Some(Abs(strand_begin_abs)) = p.next(){
       let argument_occurrences = new_strand_opening_occurrences(t, &strand_end_var);
 
-      if VERBOSE {
+      if config.verbose {
         if argument_occurrences.is_empty() {
           print!("Strand ended|Maximal    |Depth:{}|Traversal: {}", depth, format_sequence(t, free_variable_indices))
         } else {
@@ -1308,8 +1341,9 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
       }
 
       let length_before = t.len();
+      let mut max_traversal_length = length_before;
 
-      ast::Abs {
+      let term = ast::Abs {
         bound_variables: match strand_begin_abs {
           Structural(a) => { a.node.bound_variables.clone() },
           Ghost(a) => { a.node.bound_variables.clone() }
@@ -1325,13 +1359,18 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
                         .iter()
                         .map(|o| {
                                   t.push(Abs(o.clone()));
-                                  let r = traverse_and_readout(root, t, free_variable_indices, depth+1);
+                                  let (r, max_length) = traverse_and_readout(config, root, t, free_variable_indices, depth+1);
+                                  if max_length > max_traversal_length {
+                                    max_traversal_length = max_length
+                                  }
                                   t.truncate(length_before);
                                   Rc::new(r)
                         })
                         .collect::<Vec<Rc<ast::Abs<DeBruijnPair>>>>()
           }))
-        }
+        };
+
+        (term, max_traversal_length)
     } else {
       panic!("Invalid strand: it should end with an abstraction node.")
     }
@@ -1348,21 +1387,25 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
 /// Note therefore, that variable name collision may occur at pretty-printing time if just displaying the variable name
 /// without the associated deBruijn pairs.
 fn evaluate_and_name_free_readout<T : Clone + ToString + NameLookup + BinderLocator<T>>(
+  config: &Configuration,
   root:&ast::Term<T>,
   free_variable_indices: &mut Vec<Identifier>
-) -> ast::Abs<DeBruijnPair>
+) -> (ast::Abs<DeBruijnPair>, usize)
 {
   // Note that we set the `with_encoding` argument to `true`, since otherwise
   // by printing the variable names only we could create naming conflicts.
   println!("Evaluating {}", pretty_print::format_lambda_term(root, free_variable_indices, true));
-  traverse_and_readout(root, &mut Vec::new(), free_variable_indices, 0)
+  traverse_and_readout(config, root, &mut Vec::new(), free_variable_indices, 0)
 }
 
 /// Evaluate and readout the *name-free* normal form of a lambda term and print out the resulting term
-pub fn evaluate_and_print_normal_form(term: &ast::Term<Identifier>) {
+pub fn evaluate_and_print_normal_form(
+  config: &Configuration,
+  term: &ast::Term<Identifier>) {
   let mut free_variable_indices : Vec<String> = Vec::new();
-  let readout = evaluate_and_name_free_readout::<Identifier>(term, &mut free_variable_indices);
-  println!("{}", pretty_print::format_lambda_term::<DeBruijnPair>(&readout, &free_variable_indices, true))
+  let (readout, max_length) = evaluate_and_name_free_readout::<Identifier>(config, term, &mut free_variable_indices);
+  println!("{}", pretty_print::format_lambda_term::<DeBruijnPair>(&readout, &free_variable_indices, true));
+  println!("longest traversal {}", max_length);
 }
 
 /// Binder locator for variable references encoded with DeBruijn pairs.
@@ -1574,11 +1617,14 @@ fn resolve_name_ambiguity (
 
 /// Evaluate and readout the normal form of a lambda term with variable identifier
 /// fully resolved and print out the resulting term
-pub fn evaluate_resolve_print_normal_form(term: &ast::Abs<Identifier>) {
+pub fn evaluate_resolve_print_normal_form(
+  config : &Configuration,
+  term: &ast::Abs<Identifier>) {
   let mut free_variable_indices = Vec::new();
-  let readout = evaluate_and_name_free_readout::<Identifier>(term, &mut free_variable_indices);
+  let (readout, max_length) = evaluate_and_name_free_readout::<Identifier>(config, term, &mut free_variable_indices);
   let resolved_name_readout = resolve_name_ambiguity(&readout, &free_variable_indices, &mut Vec::new());
-  println!("Normalized term: {}", pretty_print::format_lambda_term(&resolved_name_readout, &free_variable_indices, false))
+  println!("Normalized term: {}", pretty_print::format_lambda_term(&resolved_name_readout, &free_variable_indices, false));
+  println!("longest traversal {}", max_length);
 }
 
 
@@ -1592,27 +1638,29 @@ mod tests {
   fn test_traversals_enumeration () {
     let p = crate::alt_lambdaterms::TermParser::new();
 
+    let config = super::Configuration::default();
 
     println!("===== Enumerating all traversals");
     let neil = p.parse(NEIL).unwrap();
-    super::enumerate_all_traversals::<String>(&neil);
+    super::enumerate_all_traversals::<String>(&config, &neil);
 
     let varity_two = p.parse(VARITY_TWO).unwrap();
-    super::enumerate_all_traversals::<String>(&varity_two);
+    super::enumerate_all_traversals::<String>(&config, &varity_two);
   }
 
 
   #[test]
   fn test_normalization_by_traversals_name_free () {
     let p = crate::alt_lambdaterms::TermParser::new();
+    let config = super::Configuration::default();
 
     println!("===== Evaluation without name resolution");
 
     let neil = p.parse(NEIL).unwrap();
-    super::evaluate_and_print_normal_form(&neil);
+    super::evaluate_and_print_normal_form(&config, &neil);
 
     let varity_two = p.parse(VARITY_TWO).unwrap();
-    super::evaluate_and_print_normal_form(&varity_two);
+    super::evaluate_and_print_normal_form(&config, &varity_two);
 
     let omega = p.parse(OMEGA).unwrap();
     println!("Traversing {}", super::pretty_print::format_lambda_term(&omega, &Vec::new(), false));
@@ -1625,12 +1673,14 @@ mod tests {
   #[test]
   fn test_normalization_by_traversals () {
     let p = crate::alt_lambdaterms::TermParser::new();
+    let config = super::Configuration::default();
+
     let neil = p.parse(NEIL).unwrap();
 
     println!("===== Evaluation with name-preserving resolution");
-    super::evaluate_resolve_print_normal_form(&neil);
+    super::evaluate_resolve_print_normal_form(&config, &neil);
 
     let varity_two = p.parse(VARITY_TWO).unwrap();
-    super::evaluate_resolve_print_normal_form(&varity_two);
+    super::evaluate_resolve_print_normal_form(&config,&varity_two);
   }
 }

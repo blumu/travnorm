@@ -115,8 +115,6 @@ cargo run "(λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z
 Output:
 
 ```text
-Running `target\debug\travnorm.exe "(λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))"`
-
 Parsing lambda term (λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))
 term has length 26
 ===== Evaluation without name resolution
