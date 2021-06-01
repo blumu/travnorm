@@ -58,3 +58,12 @@ cargo run --   "(%mult%) (%three%) (%six%)"
 cargo run --   "(%mult%) (%four%) (%four%)"
 cargo run --   "(%mult%) (%six%) (%six%)"
 ```
+
+
+## Large stack use
+
+This example produces a stack overflow (`STATUS_STACK_OVERFLOW`) with the default Rust stack size:
+
+```cmd
+cargo run -- "(λs . s(s(s(s 0)))) ((λ f x.f(f(f(f(f x)))))) "
+```

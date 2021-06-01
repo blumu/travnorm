@@ -1467,41 +1467,67 @@ fn try_get_binding_index(b:&Binder, name:&str) -> Option<usize> {
 /// with the same name?
 fn has_naming_conflict (
     binding_index: usize,
-    abs_node : &ast::Abs<DeBruijnPair>,
+    root_abs_node : &ast::Abs<DeBruijnPair>,
     free_variable_indices: &[Identifier],
     binders_from_root : &[Binder],
     depth_not_to_cross:usize,
     suggested_name:&str ) -> bool
 {
-  let depth_not_to_cross = depth_not_to_cross + 1;
-  match &abs_node.body {
-    ast::AppOrVar::App(a) => {
-      has_naming_conflict(binding_index, &a.operator, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)
-      || a.operands.iter().position(|o| has_naming_conflict(binding_index, o, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)).is_some()
-    },
+  let mut depth_not_to_cross = depth_not_to_cross + 1;
+  let mut stack = Vec::<(&ast::Abs<DeBruijnPair>, usize)>::new();
 
-    ast::AppOrVar::Var(v) => {
-      // Note that `+1` is needed because variable name in lambda-binders start at index 1
-      let current_index_in_current_binder_node = binding_index + 1;
-      let over_arcing_binding =
-        v.name.depth > depth_not_to_cross
-        || (v.name.depth == depth_not_to_cross
-            && v.name.index < current_index_in_current_binder_node);
+  stack.push((root_abs_node, 0));
+  while !stack.is_empty() {
+    let (abs_node, index) = stack.pop().unwrap();
 
-      if over_arcing_binding {
-        // We found a variable node with over-arcing binding (i.e. binding lambda occurring above binder 'b')
-        // we now lookup its assigned name to check if there is a name conflict
-        let adjusted_debruijn = DeBruijnPair{ depth : v.name.depth - depth_not_to_cross + 1, index : v.name.index };
-        let over_arcing_variable_assigned_name =
-          adjusted_debruijn.lookup(binders_from_root, &free_variable_indices, false);
+    match &abs_node.body {
+      ast::AppOrVar::App(a) => {
+        if index == 0 {
+          depth_not_to_cross += 1;
+          stack.push((abs_node, 1));
+          stack.push((&a.operator, 0));
+        } else if index <= a.operands.len() {
+          stack.push((abs_node, index + 1));
+          stack.push((&a.operands[index - 1], 0));
+        } else if index > a.operands.len() {
+          depth_not_to_cross -= 1;
+        }
+      },
 
-        if suggested_name == over_arcing_variable_assigned_name {
-          return true
+      ast::AppOrVar::Var(v) => {
+        if index == 0 {
+          depth_not_to_cross += 1;
+
+          // Note that `+1` is needed because variable name in lambda-binders start at index 1
+          let current_index_in_current_binder_node = binding_index + 1;
+          let over_arcing_binding =
+            v.name.depth > depth_not_to_cross
+            || (v.name.depth == depth_not_to_cross
+                && v.name.index < current_index_in_current_binder_node);
+
+          if over_arcing_binding {
+            // We found a variable node with over-arcing binding (i.e. binding lambda occurring above binder 'b')
+            // we now lookup its assigned name to check if there is a name conflict
+            let adjusted_debruijn = DeBruijnPair{ depth : v.name.depth - depth_not_to_cross + 1, index : v.name.index };
+            let over_arcing_variable_assigned_name =
+              adjusted_debruijn.lookup(binders_from_root, &free_variable_indices, false);
+
+            if suggested_name == over_arcing_variable_assigned_name {
+              return true
+            }
+          }
+
+          stack.push((abs_node, 1));
+        } else if index <= v.arguments.len() {
+          stack.push((abs_node, index + 1));
+          stack.push((&v.arguments[index - 1], 0));
+        } else if index > v.arguments.len() {
+          depth_not_to_cross -= 1;
         }
       }
-      v.arguments.iter().position(|o| has_naming_conflict(binding_index, o, free_variable_indices, binders_from_root, depth_not_to_cross+1, suggested_name)).is_some()
     }
   }
+  false
 }
 
 
@@ -1724,5 +1750,10 @@ mod tests {
 
     let varity_two = p.parse(VARITY_TWO).unwrap();
     super::evaluate_resolve_print_normal_form(&config,&varity_two);
+
+    assert_normal_form(
+          "(λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))",
+          "λx x' s z.s (x s (x' s z))");
+
   }
 }
