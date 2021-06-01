@@ -74,5 +74,9 @@ Name: String = <s:r"[a-zA-Z0-9]+"> => s.to_string();
 
 LambdaSymbol = {
     "\\Lambda",
+    "\\lambda",
+    "Lambda",
+    "lambda",
+    "\\",
     "λ"
 }

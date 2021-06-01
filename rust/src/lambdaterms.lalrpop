@@ -19,6 +19,10 @@ Lambda : LambdaTerm = {
 
 LambdaSymbol = {
     "\\Lambda",
+    "\\lambda",
+    "Lambda",
+    "lambda",
+    "\\",
     "λ"
 }
 

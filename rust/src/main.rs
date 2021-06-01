@@ -59,45 +59,45 @@ fn main() {
   while !args.is_empty() {
     match args.first() {
       None => break,
-      Some(arg) if arg.starts_with("--enumerate") => commands.enumerate = true,
-      Some(arg) if arg.starts_with("--normalize") => commands.normalize = true,
-      Some(arg) if arg.starts_with("--normalize_resolve") => commands.normalize_resolve = true,
-      Some(arg) if arg.starts_with("--no-pumping") => commands.configuration.pump_out_copycat_ghosts = false,
-      Some(arg) if arg.starts_with("--verbose") => {
+      Some(arg) if arg.eq_ignore_ascii_case("--enumerate") => commands.enumerate = true,
+      Some(arg) if arg.eq_ignore_ascii_case("--normalize") => commands.normalize = true,
+      Some(arg) if arg.eq_ignore_ascii_case("--normalize_resolve") => commands.normalize_resolve = true,
+      Some(arg) if arg.eq_ignore_ascii_case("--no-pumping") => commands.configuration.pump_out_copycat_ghosts = false,
+      Some(arg) if arg.eq_ignore_ascii_case("--verbose") => {
         args.remove(0);
         match args.first() {
           None => {
-              eprintln!("Missing argument for --verbose");
-              usage_and_exit(&exe_path);
+            eprintln!("Missing argument for --verbose");
+            usage_and_exit(&exe_path);
           },
           Some(value) => {
               match value.parse::<u32>() {
               Ok(0) => {
-                  commands.configuration.verbose = false;
-                  commands.configuration.very_verbose = false;
-                  commands.configuration.debug = false;
+                commands.configuration.verbose = false;
+                commands.configuration.very_verbose = false;
+                commands.configuration.debug = false;
               },
               Ok(1) => {
-                  commands.configuration.verbose = true;
-                  commands.configuration.very_verbose = false;
-                  commands.configuration.debug = false;
+                commands.configuration.verbose = true;
+                commands.configuration.very_verbose = false;
+                commands.configuration.debug = false;
               },
               Ok(_) => {
-                  commands.configuration.verbose = true;
-                  commands.configuration.very_verbose = true;
-                  commands.configuration.debug = true;
+                commands.configuration.verbose = true;
+                commands.configuration.very_verbose = true;
+                commands.configuration.debug = true;
               },
               Err(e) => {
-                  eprintln!("Invalid argument for --verbose: {}", e);
-                  usage_and_exit(&exe_path);
+                eprintln!("Invalid argument for --verbose: {}", e);
+                usage_and_exit(&exe_path);
               }
             }
           }
         }
       },
       Some(arg) if arg.starts_with("--") => {
-              eprintln!("Unrecognized switch: {}", arg);
-              usage_and_exit(&exe_path);
+        eprintln!("Unrecognized switch: {}", arg);
+        usage_and_exit(&exe_path);
       },
       _ => break
     };

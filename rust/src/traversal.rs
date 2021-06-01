@@ -126,7 +126,7 @@ type AbsOccurrence<T> = Generalized<MaybeJustifiedOccurrence<ast::Abs<T>>, Justi
 
 type AppOccurrence<T> = UnjustifiedOccurrence<ast::App<T>>;
 
-/// Generic enum to help create types discriminating over the three possible lambda term node types
+/// Generic enum to help create types discriminating over the THREE possible lambda term node types
 #[derive(Clone, Copy)]
 pub enum TermBranching<V,L,A> {
   /// Variable
@@ -1039,9 +1039,11 @@ fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
 ) -> usize {
 
   let log_indent = "  ".repeat(depth);
+
+  let next = traverse_next_strand(config, tree_root, t, free_variable_indices);
   let mut max_traversal_length = t.len();
 
-  match traverse_next_strand(config, tree_root, t, free_variable_indices) {
+  match next {
     Extension::None => {
       println!("{}|Depth:{}|Length:{}|Maximal traversal:{}",
           log_indent,
@@ -1062,7 +1064,7 @@ fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
       panic!("Cannot happen: single-choice extensions all unfolded when traversing the strand!")
     },
 
-    // previous occurrence is an external variable with multiple non-deterministic choices
+    // previous occurrence is an external variable with MULTiple non-deterministic choices
     // of children lambda nodes for the next occurrence
     Extension::ChoiceOfLambdas(node_occurrence_choices) => {
       if config.verbose { println!("{}|Depth:{}|External variable reached with {} branch(es): {}",
@@ -1146,7 +1148,7 @@ mod pretty_print {
   /// E.g. when using DeBruijn pair encoding, this would print terms of this form:
   /// `\lambda x x s z.s(1,3) (x(3,1) s(5,3) (x(5,2) s(7,3) z(7,4)))`
   /// where the encoding in bracket helps removed the ambiguity caused by having the same name `x`
-  /// shared by two distinct bound variables.
+  /// shared by TWO distinct bound variables.
   /// In this example, `x(3,1)` refers to the first bound `x`, while `x(5,2)` refers to the second bound variable `x`.
   ///
   /// - `free_variable_indices` array that can optionally be used by the variable lookup function to
@@ -1227,7 +1229,7 @@ mod pretty_print {
       }
     } else {
       Pretty {
-        pretty_printed: format!(r"λ {}.{}", abs_term.bound_variables.join(" "), body_print.pretty_printed),
+        pretty_printed: format!(r"λ{}.{}", abs_term.bound_variables.join(" "), body_print.pretty_printed),
         must_bracket_if_argument: true
       }
     }
@@ -1323,7 +1325,7 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
 
   traverse_next_strand(config, root, &mut t, free_variable_indices);
 
-  // get the last two nodes from the core projection
+  // get the last TWO nodes from the core projection
   let mut p = core_projection(config, t, free_variable_indices);
 
   // The strand ends with an external variable, call it x
@@ -1543,7 +1545,7 @@ fn resolve_name_ambiguity (
     // Determine if a specified identifer is already used in any lambda abstraction
     // 'above' the current binding (at index `binder_name_index` in `binders_from_root.last()`).
     //
-    // Since in our AST lambda nodes can abstract multiple variable at once, here `above`
+    // Since in our AST lambda nodes can abstract MULTiple variable at once, here `above`
     // means either in a lambda node sitting above the current binder `binders_from_root.last()`
     // or in the same binder node but before `binder_name_index`.
     let name_already_declared_above = | suggested_name:&Identifier | {
@@ -1667,6 +1669,46 @@ mod tests {
 
     //// Don't do this, it will run literally forever!
     // super::evaluate_and_print_normal_form(omega)
+  }
+
+
+
+  fn assert_normal_form(input :&str, expected_output :&str){
+    let p = crate::alt_lambdaterms::TermParser::new();
+    let config = super::Configuration::default();
+    let parsed_input = p.parse(input).unwrap();
+
+    let mut free_variable_indices = Vec::new();
+    let (readout, _) = super::evaluate_and_name_free_readout::<super::Identifier>(&config, &parsed_input, &mut free_variable_indices);
+    let resolved_name_readout = super::resolve_name_ambiguity(&readout, &free_variable_indices, &mut Vec::new());
+    let output_as_string = super::pretty_print::format_lambda_term(&resolved_name_readout, &free_variable_indices, false);
+
+    assert!(expected_output == output_as_string, "output={} expected={}",output_as_string,expected_output);
+  }
+
+  /// Church-encoded numbers
+  mod church {
+    pub const ZERO : &str = "λs z. z";
+    pub const TWO : &str = "λs z.s (s z)";
+    pub const THREE : &str = "λs z.s (s (s z))";
+    pub const FOUR : &str = "λs z.s (s (s (s z)))";
+    pub const FIVE : &str = "λs z.s (s (s (s (s z))))";
+    pub const SIX : &str = "λs z.s (s (s (s (s (s z)))))";
+    pub const SUCC : &str = "λ n s z.s (n s z)";
+    pub const PLUS : &str = "λm n.m (λ n s z.s (n s z)) n";
+    pub const MULT : &str = "λm n.m ((λm n.m (λ n s z.s (n s z)) n) n) (λ s z. z)";
+  }
+
+   #[test]
+  fn test_church_numerals() {
+    let term = format!("({}) ({}) ({})", church::MULT, church::THREE, church::TWO);
+    assert_normal_form(&term, church::SIX);
+
+    let term = format!("({}) ({}) ({})", church::PLUS, church::ZERO, church::THREE);
+    assert_normal_form(&term, church::THREE);
+
+    let term = format!("({}) ({})", church::SUCC, church::FOUR);
+    assert_normal_form(&term, church::FIVE);
   }
 
 

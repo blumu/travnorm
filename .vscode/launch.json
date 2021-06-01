@@ -18,7 +18,7 @@
             "type": "lldb",
             "request": "launch",
             "name": "Launch travnorm",
-            "args": [],
+            "args": ["(λm n.m ((λm n.m (λ n f x.f (n f x)) n) n) (λ s z. z)) (λs z. s(s(s(s z)))) (λs z. s(s(s(s z))))"],
             "program": "${workspaceFolder}/rust/target/debug/travnorm",
             "windows": {
                 "program": "${workspaceFolder}/rust/target/debug/travnorm.exe"
