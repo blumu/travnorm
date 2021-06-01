@@ -1029,65 +1029,85 @@ fn traverse_next_strand<T : Clone + ToString + BinderLocator<T>>(
 }
 
 /// Enumerate and print all the traversals of a lambda term term
-/// starting from a given incomplete traversal prefix `t`
 fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
   config: &Configuration,
   tree_root: &ast::Abs<T>,
-  t: &mut JustSeq<T>,
   free_variable_indices: &mut Vec<Identifier>,
   depth:usize
 ) -> usize {
 
   let log_indent = "  ".repeat(depth);
 
-  let next = traverse_next_strand(config, tree_root, t, free_variable_indices);
-  let mut max_traversal_length = t.len();
+  let t : &mut JustSeq<T> = &mut Vec::new();
 
-  match next {
-    Extension::None => {
-      println!("{}|Depth:{}|Length:{}|Maximal traversal:{}",
+  // stack containing traversal occurrences indices where the enumeration forks out
+  let mut stack = Vec::<(usize, AbsOccurrence<T>)>::new();
+
+  let mut max_traversal_length = 1;
+
+  let initial_occurrence =
+    Generalized::Structural(
+      MaybeJustifiedOccurrence {
+        node: Rc::new(tree_root.clone()),
+        j : None,
+      });
+
+  stack.push((0, initial_occurrence));
+
+  while let Some ((at, next_occurrence)) = stack.pop() {
+    let label = next_occurrence.may_pointer().map_or("--".to_owned(), |p| p.label.to_string());
+
+    t.truncate(at);
+    t.push(Abs(next_occurrence));
+
+    if config.verbose { println!("{}|Depth:{}|Choice:{}|Traversal: {}",
+      log_indent, depth,
+      label, // node_occurrence_choices all have a pointer
+      format_sequence(t, free_variable_indices)
+      );
+    }
+
+    let next = traverse_next_strand(config, tree_root, t, free_variable_indices);
+
+    if t.len() > max_traversal_length {
+      max_traversal_length = t.len()
+    }
+
+    match next {
+      Extension::None => {
+        println!("{}|Depth:{}|Length:{}|Maximal traversal:{}",
+            log_indent,
+            depth,
+            t.len(),
+            format_sequence(&t, free_variable_indices));
+
+        let mut p : Vec<Occurrence<T>> = core_projection(config, t, free_variable_indices).collect();
+        p.reverse();
+
+        println!("{}|      {}        projection:{}",
+            log_indent,
+            " ".repeat(depth.to_string().len()),
+            format_sequence(&p, free_variable_indices));
+      },
+
+      Extension::Single(_) => {
+        panic!("Cannot happen: single-choice extensions all unfolded when traversing the strand!")
+      },
+
+      // previous occurrence is an external variable with MULTiple non-deterministic choices
+      // of children lambda nodes for the next occurrence
+      Extension::ChoiceOfLambdas(node_occurrence_choices) => {
+        if config.verbose { println!("{}|Depth:{}|External variable reached with {} branch(es): {}",
           log_indent,
           depth,
-          t.len(),
-          format_sequence(t, free_variable_indices));
+          node_occurrence_choices.len(),
+          format_sequence(t, free_variable_indices)) };
 
-      let mut p : Vec<Occurrence<T>> = core_projection(config, t, free_variable_indices).collect();
-      p.reverse();
-
-      println!("{}|      {}        projection:{}",
-          log_indent,
-          " ".repeat(depth.to_string().len()),
-          format_sequence(&p, free_variable_indices));
-    },
-
-    Extension::Single(_) => {
-      panic!("Cannot happen: single-choice extensions all unfolded when traversing the strand!")
-    },
-
-    // previous occurrence is an external variable with MULTiple non-deterministic choices
-    // of children lambda nodes for the next occurrence
-    Extension::ChoiceOfLambdas(node_occurrence_choices) => {
-      if config.verbose { println!("{}|Depth:{}|External variable reached with {} branch(es): {}",
-        log_indent,
-        depth,
-        node_occurrence_choices.len(),
-        format_sequence(t, free_variable_indices)) };
-
-      for o in node_occurrence_choices {
-        let label = o.may_pointer().unwrap().label;
         let before_length = t.len();
-        t.push(Abs(o));
-        if config.verbose { println!("{}|Depth:{}|Choice:{}|Traversal: {}|Occurrence: {}",
-          log_indent, depth,
-          label, // node_occurrence_choices all have a pointer
-          format_sequence(t, free_variable_indices),
-          format_occurrence(t, t.len()-1, free_variable_indices));
+
+        for o in node_occurrence_choices {
+          stack.push((before_length, o));
         }
-        let max_length = enumerate_all_traversals_from(config, tree_root, t, free_variable_indices, depth+1);
-        if max_length > max_traversal_length {
-          max_traversal_length = max_length
-        }
-        t.truncate(before_length);
       }
     }
   }
@@ -1243,7 +1263,7 @@ pub fn enumerate_all_traversals<T : Clone + ToString + NameLookup + BinderLocato
   term: &ast::Term<T>
 ) {
   println!("Traversing {}", pretty_print::format_lambda_term(term, &Vec::new(), false));
-  let l = enumerate_all_traversals_from(config, term, &mut Vec::new(), &mut Vec::new(), 0);
+  let l = enumerate_all_traversals_from(config, term, &mut Vec::new(), 0);
   println!("longest traversal {}", l);
 
 }
