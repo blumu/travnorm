@@ -1318,88 +1318,142 @@ impl NameLookup for DeBruijnPair {
     }
 }
 
+
+/// Stack element type used to readout the
+/// normal form of a term from its traversals.
+/// A stack element of the form:
+/// - `Down(at, o)` indicates to traverse lambda occurrence `o` at the prefix of length `at`
+/// in traversal `t`.
+/// - `Up(abs, var, c)` indicates to forma a new AST node in the normalized AST with the abstraction `abs`, variable `var`
+/// and `c` children sub-terms obtained by popping `c` elements from the value stack.
+enum UpDown<T> {
+  Up((AbsOccurrence<T>, VarOccurrence<T>, usize)),
+  Down((usize, AbsOccurrence<T>))
+}
+
 /// Recursively traverse the term tree and read out its normal form.
 ///
-/// The traversal resumes at the point given by the specified traversal `t`
-/// and proceeds by recursively extending the traversal one strand at a time.
+/// The traversal proceeds by recursively extending the traversal one strand at a time.
 ///
-/// The function returns the normal form of the subterm whose root node is
-/// the last occurrence of traversal `t`
+/// The function returns the normal form of the subterm rooted at root.
 ///
 /// Arguments:
 /// ----------
 /// - `config` traversal configuration
 /// - `root` the root of the term tree
-/// - `t`: a strand-complete traversal of the tree
 /// - `free_variable_indices` free variable name to index table
-/// - `depth` node depth of the last node in the traversal
-///
 /// Returns the normalized term with the length of the longest traversal.
 fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
     config: &Configuration,
-    root:&ast::Term<T>,
-    mut t: &mut JustSeq<T>,
+    root: &ast::Term<T>,
     free_variable_indices: &mut Vec<Identifier>,
-    depth: u32
 ) -> (ast::Abs<DeBruijnPair>, usize) {
 
-  traverse_next_strand(config, root, &mut t, free_variable_indices);
+  let t : &mut JustSeq<T> = &mut Vec::new();
 
-  // get the last TWO nodes from the core projection
-  let mut p = core_projection(config, t, free_variable_indices);
+  // A stack of resuming points in the traversal `t`
+  // to be further extended to form a subterm of the normalized term.
+  let mut control_stack = Vec::<UpDown<T>>::new();
 
-  // The strand ends with an external variable, call it x
-  if let Some(Var(strand_end_var)) = p.next() {
-    // The strand starts with an external lambda, call it \lambda y1 .... y_n
-    if let Some(Abs(strand_begin_abs)) = p.next(){
-      let argument_occurrences = new_strand_opening_occurrences(t, &strand_end_var);
+  // A stack where to store fully normalized sub-terms
+  // in a bottom-up fashion
+  let mut value_stack = Vec::<ast::Abs<DeBruijnPair>>::new();
 
-      if config.verbose {
-        if argument_occurrences.is_empty() {
-          print!("Strand ended|Maximal    |Depth:{}|Traversal: {}", depth, format_sequence(t, free_variable_indices))
-        } else {
-          print!("Strand ended|Not maximal|Depth:{}|Traversal: {}", depth, format_sequence(t, free_variable_indices))
+  let mut max_traversal_length = 0;
+
+  // `depth` node depth of the last node in the traversal
+  let mut depth = 0;
+
+  let initial_occurrence =
+    Generalized::Structural(
+      MaybeJustifiedOccurrence {
+        node: Rc::new(root.clone()),
+        j : None,
+      });
+
+  control_stack.push(UpDown::Down((0, initial_occurrence)));
+
+  while let Some(up_down) = control_stack.pop() {
+    match up_down {
+      UpDown::Down ((at, next_occurrence)) => {
+        t.truncate(at);
+        t.push(Abs(next_occurrence));
+
+        traverse_next_strand(config, root, t, free_variable_indices);
+
+        if t.len() > max_traversal_length {
+          max_traversal_length = t.len()
         }
-      }
 
-      let length_before = t.len();
-      let mut max_traversal_length = length_before;
+        // get the last TWO nodes from the core projection
+        let mut p = core_projection(config, t, free_variable_indices);
 
-      let term = ast::Abs {
-        bound_variables: match strand_begin_abs {
-          Structural(a) => { a.node.bound_variables.clone() },
-          Ghost(a) => { a.node.bound_variables.clone() }
-        },
-        body: ast::AppOrVar::Var(Rc::new(ast::Var{
-            // Since the core projection of the traversal is the path to the root (see paper),
-            // the depth of the variable is precisely the distance to the justifying node in the core projection.
-            name: DeBruijnPair {
-              depth: strand_end_var.pointer().distance,
-              index: strand_end_var.pointer().label
+        // The strand ends with an external variable, call it x
+        if let Some(Var(strand_end_var)) = p.next() {
+          // The strand starts with an external lambda, call it \lambda y1 .... y_n
+          if let Some(Abs(strand_begin_abs)) = p.next(){
+
+            let mut argument_occurrences = new_strand_opening_occurrences(t, &strand_end_var);
+
+            control_stack.push(UpDown::Up((strand_begin_abs, strand_end_var, argument_occurrences.len())));
+
+            depth += 1;
+            let l = t.len();
+            argument_occurrences.reverse();
+            for o in argument_occurrences {
+              control_stack.push(UpDown::Down((l, o)));
+            }
+          } else {
+            panic!("Invalid strand: it should end with an abstraction node.")
+          }
+        } else {
+          panic!("Invalid strand: it should start with a variable node.")
+        }
+      },
+
+      UpDown::Up((strand_begin_abs, strand_end_var, children_count)) => {
+
+        if config.verbose {
+          if children_count == 0 {
+            print!("Strand ended|Maximal    |Depth:{}|Traversal: {}", depth, format_sequence(t, free_variable_indices))
+          } else {
+            print!("Strand ended|Not maximal|Depth:{}|Traversal: {}", depth, format_sequence(t, free_variable_indices))
+          }
+        }
+
+        // Pop the children sub-term from the value stack
+        let arguments =
+            value_stack
+              .drain((value_stack.len()-children_count)..)
+              .map(|n| Rc::new(n))
+              .collect();
+
+        let subterm = ast::Abs {
+            bound_variables: match strand_begin_abs {
+              Structural(a) => { a.node.bound_variables.clone() },
+              Ghost(a) => { a.node.bound_variables.clone() }
             },
-            arguments: argument_occurrences
-                        .iter()
-                        .map(|o| {
-                                  t.push(Abs(o.clone()));
-                                  let (r, max_length) = traverse_and_readout(config, root, t, free_variable_indices, depth+1);
-                                  if max_length > max_traversal_length {
-                                    max_traversal_length = max_length
-                                  }
-                                  t.truncate(length_before);
-                                  Rc::new(r)
-                        })
-                        .collect::<Vec<Rc<ast::Abs<DeBruijnPair>>>>()
-          }))
-        };
+            body: ast::AppOrVar::Var(Rc::new(ast::Var{
+                // Since the core projection of the traversal is the path to the root (see paper),
+                // the depth of the variable is precisely the distance to the justifying node in the core projection.
+                name: DeBruijnPair {
+                  depth: strand_end_var.pointer().distance,
+                  index: strand_end_var.pointer().label
+                },
+                arguments: arguments
+              }))
+            };
 
-        (term, max_traversal_length)
-    } else {
-      panic!("Invalid strand: it should end with an abstraction node.")
+        value_stack.push(subterm);
+
+        depth -= 1
+
+      }
     }
-  } else {
-    panic!("Invalid strand: it should start with a variable node.")
   }
 
+  let normalized_term = value_stack.pop().unwrap_or_else(|| panic!("There is a bug: `value_stack` should have a single element."));
+  (normalized_term, max_traversal_length)
 }
 
 /// Evaluate and readout the *name-free* (deBruijn pairs-based)
@@ -1417,7 +1471,7 @@ fn evaluate_and_name_free_readout<T : Clone + ToString + NameLookup + BinderLoca
   // Note that we set the `with_encoding` argument to `true`, since otherwise
   // by printing the variable names only we could create naming conflicts.
   println!("Evaluating {}", pretty_print::format_lambda_term(root, free_variable_indices, true));
-  traverse_and_readout(config, root, &mut Vec::new(), free_variable_indices, 0)
+  traverse_and_readout(config, root, free_variable_indices)
 }
 
 /// Evaluate and readout the *name-free* normal form of a lambda term and print out the resulting term

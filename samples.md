@@ -65,5 +65,7 @@ cargo run --   "(%mult%) (%six%) (%six%)"
 This example produces a stack overflow (`STATUS_STACK_OVERFLOW`) with the default Rust stack size:
 
 ```cmd
+cargo run -- --enumerate  "(λs . s(s(s(s 0)))) ((λ f x.f(f(f(f(f x)))))) "
+cargo run -- --enumerate --verbose 1 "(λs . s(s(s(s 0)))) ((λ f x.f(f(f(f(f x)))))) "
 cargo run -- "(λs . s(s(s(s 0)))) ((λ f x.f(f(f(f(f x)))))) "
 ```
