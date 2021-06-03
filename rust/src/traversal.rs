@@ -779,7 +779,6 @@ fn extend_traversal<T : Clone + BinderLocator<T>>(
   }
 }
 
-
 fn format_pointer(p: &Pointer) -> String {
   format!("({},{})", p.distance, p.label)
 }
@@ -1029,19 +1028,21 @@ fn traverse_next_strand<T : Clone + ToString + BinderLocator<T>>(
 }
 
 /// Enumerate and print all the traversals of a lambda term term
-fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
+fn enumerate_and_print_all_traversals<T: Clone + ToString + BinderLocator<T>>(
   config: &Configuration,
   tree_root: &ast::Abs<T>,
-  free_variable_indices: &mut Vec<Identifier>,
-  depth:usize
 ) -> usize {
 
-  let log_indent = "  ".repeat(depth);
+  let mut free_variable_indices: Vec<Identifier> = Vec::new();
 
-  let t : &mut JustSeq<T> = &mut Vec::new();
+  let mut t : JustSeq<T> = Vec::new();
 
   // stack containing traversal occurrences indices where the enumeration forks out
-  let mut stack = Vec::<(usize, AbsOccurrence<T>)>::new();
+  // Stack elements are of the form:
+  //  - index of the traversal where to resume
+  //  - next abstraction occurrence to visit at the resume point in the traversal
+  //  - depth in the search tree
+  let mut stack = Vec::<(usize, AbsOccurrence<T>, usize)>::new();
 
   let mut max_traversal_length = 1;
 
@@ -1052,22 +1053,24 @@ fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
         j : None,
       });
 
-  stack.push((0, initial_occurrence));
+  stack.push((0, initial_occurrence, 0));
 
-  while let Some ((at, next_occurrence)) = stack.pop() {
+  while let Some ((at, next_occurrence, depth)) = stack.pop() {
     let label = next_occurrence.may_pointer().map_or("--".to_owned(), |p| p.label.to_string());
 
     t.truncate(at);
     t.push(Abs(next_occurrence));
 
+    let log_indent = "  ".repeat(depth);
+
     if config.verbose { println!("{}|Depth:{}|Choice:{}|Traversal: {}",
       log_indent, depth,
       label, // node_occurrence_choices all have a pointer
-      format_sequence(t, free_variable_indices)
+      format_sequence(&t, &free_variable_indices)
       );
     }
 
-    let next = traverse_next_strand(config, tree_root, t, free_variable_indices);
+    let next = traverse_next_strand(config, tree_root, &mut t, &mut free_variable_indices);
 
     if t.len() > max_traversal_length {
       max_traversal_length = t.len()
@@ -1079,15 +1082,15 @@ fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
             log_indent,
             depth,
             t.len(),
-            format_sequence(&t, free_variable_indices));
+            format_sequence(&t, &free_variable_indices));
 
-        let mut p : Vec<Occurrence<T>> = core_projection(config, t, free_variable_indices).collect();
+        let mut p : Vec<Occurrence<T>> = core_projection(config, &t, &free_variable_indices).collect();
         p.reverse();
 
         println!("{}|      {}        projection:{}",
             log_indent,
             " ".repeat(depth.to_string().len()),
-            format_sequence(&p, free_variable_indices));
+            format_sequence(&p, &free_variable_indices));
       },
 
       Extension::Single(_) => {
@@ -1101,12 +1104,12 @@ fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
           log_indent,
           depth,
           node_occurrence_choices.len(),
-          format_sequence(t, free_variable_indices)) };
+          format_sequence(&t, &free_variable_indices)) };
 
         let before_length = t.len();
 
         for o in node_occurrence_choices {
-          stack.push((before_length, o));
+          stack.push((before_length, o, depth + 1));
         }
       }
     }
@@ -1114,11 +1117,12 @@ fn enumerate_all_traversals_from<T: Clone + ToString + BinderLocator<T>>(
   max_traversal_length
 }
 
-
 /// A binder declare a list of bound identifiers
 type Binder = Vec<Identifier>;
 
-/// To support pretty-printing of lambda terms AST, the type T must implement name lookup
+/// To support pretty-printing of lambda terms AST, the type `T`,
+/// used by the AST to represent variable binding reference,
+/// must implement name lookup.
 pub trait NameLookup {
   // Given a list of binders occurring in the path from the root
   // to the variable node, return the name of the variable.
@@ -1133,6 +1137,7 @@ pub trait NameLookup {
   )-> String;
 }
 
+/// Implementation of name lookup for identifier-based variable reference.
 impl NameLookup for String {
   fn lookup(
     &self,
@@ -1145,12 +1150,32 @@ impl NameLookup for String {
   }
 }
 
-mod pretty_print {
-  use crate::ast::{ alternating as ast, Identifier };
+/// Pretty-print a lambda term AST as string.
+///
+/// Arguments
+/// =========
+///   - `root` Root of the lambda term AST
+///
+///   - `with_encoding` if true print variable name reference encoding in addition to resolved names.
+///   E.g. when using DeBruijn pair encoding, this would print terms of this form:
+///   `\lambda x x s z.s(1,3) (x(3,1) s(5,3) (x(5,2) s(7,3) z(7,4)))`
+///   where the encoding in bracket helps removed the ambiguity caused by having the same name `x`
+///   shared by TWO distinct bound variables.
+///   In this example, `x(3,1)` refers to the first bound `x`, while `x(5,2)` refers to the second bound variable `x`.
+///
+///   - `free_variable_indices` array that can optionally be used by the variable lookup function to
+///   assign an index to free variables.
+///   This is used for instance, when T is the deBruijn encoding. If `T` is String it's not used.
+///
+pub fn format_lambda_term<T : Clone + NameLookup>(
+    root_node: &ast::Term<T>,
+    free_variable_indices: &Vec<Identifier>,
+    with_encoding: bool
+  ) -> String {
 
-  use super::NameLookup;
+  let mut binders_from_root: Vec<Binder> = Vec::new();
 
-  /// Pretty-printing helper type
+  // Pretty-printing helper type
   struct Pretty {
     pretty_printed: String,
     must_bracket_if_argument: bool
@@ -1160,101 +1185,97 @@ mod pretty_print {
     if t.must_bracket_if_argument { format!("({})", t.pretty_printed) } else { t.pretty_printed }
   }
 
-  /// Arguments
-  /// =========
-  /// - `root` Root of the lambda term AST
-  ///
-  /// - `with_encoding` if true print variable name reference encoding in addition to resolved names.
-  /// E.g. when using DeBruijn pair encoding, this would print terms of this form:
-  /// `\lambda x x s z.s(1,3) (x(3,1) s(5,3) (x(5,2) s(7,3) z(7,4)))`
-  /// where the encoding in bracket helps removed the ambiguity caused by having the same name `x`
-  /// shared by TWO distinct bound variables.
-  /// In this example, `x(3,1)` refers to the first bound `x`, while `x(5,2)` refers to the second bound variable `x`.
-  ///
-  /// - `free_variable_indices` array that can optionally be used by the variable lookup function to
-  /// assign an index to free variables.
-  /// This is used for instance, when T is the deBruijn encoding. If `T` is String it's not used.
-  ///
-  ///
-  pub fn format_lambda_term<T : Clone + NameLookup>(
-      root: &ast::Term<T>,
-      free_variable_indices: &Vec<Identifier>,
-      with_encoding: bool
-    ) -> String {
-    format_abs(root, free_variable_indices, with_encoding, &mut Vec::new()).pretty_printed
+  enum UpDown<'a, T> {
+    //UpVar(&'a str, usize),
+    UpVar(String, usize),
+    UpApp(usize),
+    Down(&'a ast::Term<T>)
   }
 
-  fn format_var<T : Clone + NameLookup>(
-    var: &ast::Var<T>,
-    free_variable_indices: &Vec<Identifier>,
-    with_encoding: bool,
-    binders_from_root: &mut Vec<super::Binder>
-  ) -> Pretty {
-    let mut p : String = var.name.lookup(binders_from_root, free_variable_indices, with_encoding).to_owned();
+  let mut control_stack = Vec::<UpDown<T>>::new();
+  control_stack.push(UpDown::Down(root_node));
 
-    if !var.arguments.is_empty() {
-      p.push_str(" ");
-      p.push_str(&mut var.arguments
-                    .iter()
-                    .map(|x| bracketize(format_abs(x, free_variable_indices, with_encoding, binders_from_root)))
-                    .collect::<Vec<String>>()
-                    .join(" "));
-    }
+  let mut value_stack = Vec::<Pretty>::new();
 
-    Pretty {
-      pretty_printed: p,
-      must_bracket_if_argument: var.arguments.len() > 0
-    }
-  }
+  while let Some(top_down) = control_stack.pop() {
+    match top_down {
+      UpDown::Down(current_node) => {
+        binders_from_root.push(current_node.bound_variables.clone());
 
-  fn format_app<T : Clone + NameLookup>(
-    app: &ast::App<T>,
-    free_variable_indices: &Vec<Identifier>,
-    with_encoding: bool,
-    binders_from_root: &mut Vec<super::Binder>
-  ) -> Pretty {
-      Pretty {
+        match &current_node.body {
+          ast::AppOrVar::Var(var) => {
+            let var_name = var.name.lookup(&binders_from_root, free_variable_indices, with_encoding).clone();
+            control_stack.push(UpDown::UpVar(var_name, var.arguments.len()));
+            for a in var.arguments.iter().rev() {
+              control_stack.push(UpDown::Down(a));
+            }
+          },
+          ast::AppOrVar::App(app) => {
+            control_stack.push(UpDown::UpApp(app.operands.len()));
+            for operand in app.operands.iter().rev() {
+              control_stack.push(UpDown::Down(operand));
+            }
+            control_stack.push(UpDown::Down(&app.operator));
+          }
+        };
+      }
+
+      UpDown::UpVar(var_name, children_count) => {
+        let mut pretty_printed = var_name.to_owned();
+        if children_count > 0 {
+          let pretty_printed_arguments =
+            value_stack
+            .drain(value_stack.len()-children_count..)
+            .map(|a| bracketize(a))
+            .collect::<Vec<String>>()
+            .join(" ");
+
+          pretty_printed.push_str(" ");
+          pretty_printed.push_str(&pretty_printed_arguments);
+        }
+
+        let abstraction_binders = binders_from_root.pop().unwrap();
+
+        value_stack.push(
+          if abstraction_binders.is_empty() {
+            Pretty {
+              pretty_printed: pretty_printed,
+              must_bracket_if_argument: children_count > 0
+            }
+          } else {
+            Pretty {
+              pretty_printed: format!(r"λ{}.{}", abstraction_binders.join(" "), pretty_printed),
+              must_bracket_if_argument: true
+            }
+          });
+      },
+
+      UpDown::UpApp(operand_count) => {
+
+        let pretty_printed_operator = bracketize(value_stack.pop().unwrap());
+
+        let pretty_printed_operands =
+            value_stack
+            .drain(value_stack.len()-operand_count..)
+            .map(|a| bracketize(a))
+            .collect::<Vec<String>>()
+            .join(" ");
+
+        let abstraction_binders = binders_from_root.pop().unwrap();
+        value_stack.push(Pretty {
           pretty_printed:
-              bracketize(format_abs(&*app.operator, free_variable_indices, with_encoding, binders_from_root))
-            + &app.operands
-                    .iter()
-                    .map(|x| bracketize(format_abs(x, free_variable_indices, with_encoding, binders_from_root)))
-                    .collect::<Vec<String>>()
-                    .join(" "),
+            if abstraction_binders.is_empty() {
+              format!("{}{}", pretty_printed_operator, pretty_printed_operands)
+            } else {
+              format!(r"λ{}.{}{}", abstraction_binders.join(" "), pretty_printed_operator, pretty_printed_operands)
+            },
           must_bracket_if_argument: true
-      }
-  }
-
-  fn format_abs<T : NameLookup + Clone>(
-    abs_term: &ast::Abs<T>,
-    free_variable_indices: &Vec<Identifier>,
-    with_encoding: bool,
-    binders_from_root: &mut Vec<super::Binder>
-  ) -> Pretty {
-
-    binders_from_root.push(abs_term.bound_variables.clone());
-
-    let body_print =
-      match &abs_term.body {
-        ast::AppOrVar::Var(v) => format_var(v, free_variable_indices,with_encoding,  binders_from_root),
-        ast::AppOrVar::App(a) => format_app(a, free_variable_indices, with_encoding, binders_from_root),
-      };
-
-    binders_from_root.pop();
-
-    if abs_term.bound_variables.is_empty() {
-      Pretty {
-        pretty_printed: body_print.pretty_printed,
-        must_bracket_if_argument: body_print.must_bracket_if_argument
-      }
-    } else {
-      Pretty {
-        pretty_printed: format!(r"λ{}.{}", abs_term.bound_variables.join(" "), body_print.pretty_printed),
-        must_bracket_if_argument: true
-      }
+        })
+      },
     }
   }
-
+  assert!(value_stack.len() == 1, "There is a bug: `value_stack` should have exactly one element.");
+  value_stack.pop().unwrap().pretty_printed
 }
 
 /// Enumerate all the traversals of a lambda term term
@@ -1262,10 +1283,9 @@ pub fn enumerate_all_traversals<T : Clone + ToString + NameLookup + BinderLocato
   config: &Configuration,
   term: &ast::Term<T>
 ) {
-  println!("Traversing {}", pretty_print::format_lambda_term(term, &Vec::new(), false));
-  let l = enumerate_all_traversals_from(config, term, &mut Vec::new(), 0);
+  println!("Traversing {}", format_lambda_term(term, &Vec::new(), false));
+  let l = enumerate_and_print_all_traversals(config, term);
   println!("longest traversal {}", l);
-
 }
 
 /// A deBruijn-like encoding where the name of a variable occurrence
@@ -1280,6 +1300,7 @@ struct DeBruijnPair {
   index: usize
 }
 
+/// Implementation of variable name lookup for variable references encoded with Debruijn pairs `DeBruijnPair`.
 impl NameLookup for DeBruijnPair {
 
     fn lookup(&self,
@@ -1317,8 +1338,6 @@ impl NameLookup for DeBruijnPair {
       }
     }
 }
-
-
 
 /// Recursively traverse the term tree and read out its normal form.
 ///
@@ -1471,7 +1490,7 @@ fn evaluate_and_name_free_readout<T : Clone + ToString + NameLookup + BinderLoca
 {
   // Note that we set the `with_encoding` argument to `true`, since otherwise
   // by printing the variable names only we could create naming conflicts.
-  println!("Evaluating {}", pretty_print::format_lambda_term(root, free_variable_indices, true));
+  println!("Evaluating {}", format_lambda_term(root, free_variable_indices, true));
   traverse_and_readout(config, root, free_variable_indices)
 }
 
@@ -1481,7 +1500,7 @@ pub fn evaluate_and_print_normal_form(
   term: &ast::Term<Identifier>) {
   let mut free_variable_indices : Vec<String> = Vec::new();
   let (readout, max_length) = evaluate_and_name_free_readout::<Identifier>(config, term, &mut free_variable_indices);
-  println!("{}", pretty_print::format_lambda_term::<DeBruijnPair>(&readout, &free_variable_indices, true));
+  println!("{}", format_lambda_term::<DeBruijnPair>(&readout, &free_variable_indices, true));
   println!("longest traversal {}", max_length);
 }
 
@@ -1782,7 +1801,7 @@ pub fn evaluate_resolve_print_normal_form(
   let mut free_variable_indices = Vec::new();
   let (readout, max_length) = evaluate_and_name_free_readout::<Identifier>(config, term, &mut free_variable_indices);
   let resolved_name_readout = resolve_name_ambiguity(&readout, &free_variable_indices);
-  println!("Normalized term: {}", pretty_print::format_lambda_term(&resolved_name_readout, &free_variable_indices, false));
+  println!("Normalized term: {}", format_lambda_term(&resolved_name_readout, &free_variable_indices, false));
   println!("longest traversal {}", max_length);
 }
 
@@ -1822,7 +1841,7 @@ mod tests {
     super::evaluate_and_print_normal_form(&config, &varity_two);
 
     let omega = p.parse(OMEGA).unwrap();
-    println!("Traversing {}", super::pretty_print::format_lambda_term(&omega, &Vec::new(), false));
+    println!("Traversing {}", super::format_lambda_term(&omega, &Vec::new(), false));
 
     //// Don't do this, it will run literally forever!
     // super::evaluate_and_print_normal_form(omega)
@@ -1838,7 +1857,7 @@ mod tests {
     let mut free_variable_indices = Vec::new();
     let (readout, _) = super::evaluate_and_name_free_readout::<super::Identifier>(&config, &parsed_input, &mut free_variable_indices);
     let resolved_name_readout = super::resolve_name_ambiguity(&readout, &free_variable_indices);
-    let output_as_string = super::pretty_print::format_lambda_term(&resolved_name_readout, &free_variable_indices, false);
+    let output_as_string = super::format_lambda_term(&resolved_name_readout, &free_variable_indices, false);
 
     assert!(expected_output == output_as_string, "output={} expected={}",output_as_string,expected_output);
   }
@@ -1885,6 +1904,5 @@ mod tests {
     assert_normal_form(
           "(λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))",
           "λx x' s z.s (x s (x' s z))");
-
   }
 }

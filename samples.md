@@ -59,12 +59,17 @@ cargo run --   "(%mult%) (%four%) (%four%)"
 cargo run --   "(%mult%) (%six%) (%six%)"
 ```
 
-## Large stack use
+## Recursion in Rust causing stack overflow
 
-This example produces a stack overflow (`STATUS_STACK_OVERFLOW`) with the default Rust stack size:
+Because Rust is not recursion-friendly (e.g., no tail-recursion and small default stack size),
+recursion had to be eliminated from all the functions to avoid stack overflow.
+The resulting implementation is slightly more complicated and less readable than the
+recursive version but allows working with even relatively small terms that would otherwise cause
+stack overflows (`STATUS_STACK_OVERFLOW`).
+
+For example the `"(λs . s(s(s(s 0)))) ((λ f x.f(f(f(f(f x))))))"` is now correctly processed by the current recursion-free implementation of traversals and pretty-printers:
 
 ```cmd
-cargo run -- --enumerate  "(λs . s(s(s(s 0)))) ((λ f x.f(f(f(f(f x)))))) "
-cargo run -- --enumerate --verbose 1 "(λs . s(s(s(s 0)))) ((λ f x.f(f(f(f(f x)))))) "
-cargo run -- "(λs . s(s(s(s 0)))) ((λ f x.f(f(f(f(f x)))))) "
+cargo run -- --enumerate  "(λs . s(s(s(s 0)))) ((λ f x.f(f(f(f(f x))))))"
+cargo run -- "(λs . s(s(s(s 0)))) ((λ f x.f(f(f(f(f x))))))"
 ```

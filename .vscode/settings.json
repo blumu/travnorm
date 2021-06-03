@@ -1,6 +1,9 @@
 {
     "cSpell.words": [
+        "MULT",
+        "SUCC",
         "Subterm",
+        "Trav",
         "arity",
         "bracketize",
         "combinators",
