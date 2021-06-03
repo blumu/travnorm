@@ -1319,17 +1319,6 @@ impl NameLookup for DeBruijnPair {
 }
 
 
-/// Stack element type used to readout the
-/// normal form of a term from its traversals.
-/// A stack element of the form:
-/// - `Down(at, o)` indicates to traverse lambda occurrence `o` at the prefix of length `at`
-/// in traversal `t`.
-/// - `Up(abs, var, c)` indicates to forma a new AST node in the normalized AST with the abstraction `abs`, variable `var`
-/// and `c` children sub-terms obtained by popping `c` elements from the value stack.
-enum UpDown<T> {
-  Up((AbsOccurrence<T>, VarOccurrence<T>, usize)),
-  Down((usize, AbsOccurrence<T>))
-}
 
 /// Recursively traverse the term tree and read out its normal form.
 ///
@@ -1348,6 +1337,18 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
     root: &ast::Term<T>,
     free_variable_indices: &mut Vec<Identifier>,
 ) -> (ast::Abs<DeBruijnPair>, usize) {
+
+  /// Stack element type used to readout the
+  /// normal form of a term from its traversals.
+  /// A stack element of the form:
+  /// - `Down(at, o)` indicates to traverse lambda occurrence `o` at the prefix of length `at`
+  /// in traversal `t`.
+  /// - `Up(abs, var, c)` indicates to forma a new AST node in the normalized AST with the abstraction `abs`, variable `var`
+  /// and `c` children sub-terms obtained by popping `c` elements from the value stack.
+  enum UpDown<T> {
+    Up(AbsOccurrence<T>, VarOccurrence<T>, usize),
+    Down(usize, AbsOccurrence<T>)
+  }
 
   let t : &mut JustSeq<T> = &mut Vec::new();
 
@@ -1371,11 +1372,11 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
         j : None,
       });
 
-  control_stack.push(UpDown::Down((0, initial_occurrence)));
+  control_stack.push(UpDown::Down(0, initial_occurrence));
 
   while let Some(up_down) = control_stack.pop() {
     match up_down {
-      UpDown::Down ((at, next_occurrence)) => {
+      UpDown::Down (at, next_occurrence) => {
         t.truncate(at);
         t.push(Abs(next_occurrence));
 
@@ -1395,13 +1396,13 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
 
             let mut argument_occurrences = new_strand_opening_occurrences(t, &strand_end_var);
 
-            control_stack.push(UpDown::Up((strand_begin_abs, strand_end_var, argument_occurrences.len())));
+            control_stack.push(UpDown::Up(strand_begin_abs, strand_end_var, argument_occurrences.len()));
 
             depth += 1;
             let l = t.len();
             argument_occurrences.reverse();
             for o in argument_occurrences {
-              control_stack.push(UpDown::Down((l, o)));
+              control_stack.push(UpDown::Down(l, o));
             }
           } else {
             panic!("Invalid strand: it should end with an abstraction node.")
@@ -1411,7 +1412,7 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
         }
       },
 
-      UpDown::Up((strand_begin_abs, strand_end_var, children_count)) => {
+      UpDown::Up(strand_begin_abs, strand_end_var, children_count) => {
 
         if config.verbose {
           if children_count == 0 {
@@ -1613,108 +1614,164 @@ fn has_naming_conflict (
 ///
 /// This function implements the *name-preserving* read-out algorithm from the paper,
 /// that preserves original variable name when possible.
+///
 /// Arguments
 /// =========
 ///
-/// - `binder_node` the node in the DeBruijn-based AST defining the root node of the subterm to be converted
+/// - `root_node` the root node of the DeBruijn-based AST of the term to be converted
 /// into an identifier-based AST.
 /// - `free_variable_indices` the index to name mapping for free variables
-/// - `binders_from_root` The list of binders from the root of the tree to the root of the subterm to be converted (itself excluded from that list)
-///    The array gets mutated by the function. This is because when converting DeBruijn pairs to string identifiers, in order to
-///    avoid potential name collisions, the function will rename some of the bound variable names in lambda nodes.
 //
 // Returns
 // =======
 // The AST corresponding to the input DeBruijn-AST where variables names are all resolved as string identifiers.
 //
-fn resolve_name_ambiguity (
-  binder_node : &ast::Abs<DeBruijnPair>,
+fn resolve_name_ambiguity<'a> (
+  root_node : &'a ast::Abs<DeBruijnPair>,
   free_variable_indices: &[Identifier],
-  binders_from_root : &mut Vec<Binder>
   ) -> ast::Abs<Identifier>
 {
-  let new_binding_names = binder_node.bound_variables.clone();
+  // Stack element type used to traverse the term.
+  enum UpDown<'a> {
+    // Build a term consisting of an abstraction followed by
+    // an application node with specified number of operands to be picked from the value stack
+    UpApp(usize),
 
-  let l = new_binding_names.len();
+    // Build a term consisting of an abstraction followed by
+    // a variable node with specified name and number of arguments to be picked from the value stack
+    UpVar(String, usize),
 
-  binders_from_root.push(new_binding_names);
+    // An abstraction node from the input term to be processed
+    Down(&'a ast::Abs<DeBruijnPair>)
+  }
 
-  // Assign permanent bound variable name to the lambda node, one at a time
-  for binder_name_index in 0..l {
+  // The list of binders from the root of the tree to the root of the current subterm to be converted (itself excluded from that list)
+  // When inserted to this array the lambda nodes are copied from the original tree, then in order to
+  // avoid potential name collisions, the function will rename some of the bound variable names in lambda nodes.
+  let mut binders_from_root : Vec<Binder> = Vec::new();
 
-    // Determine if a specified identifer is already used in any lambda abstraction
-    // 'above' the current binding (at index `binder_name_index` in `binders_from_root.last()`).
-    //
-    // Since in our AST lambda nodes can abstract MULTiple variable at once, here `above`
-    // means either in a lambda node sitting above the current binder `binders_from_root.last()`
-    // or in the same binder node but before `binder_name_index`.
-    let name_already_declared_above = | suggested_name:&Identifier | {
-      if free_variable_indices.contains(&suggested_name) {
-        // there exists a free variable with the same name
-        true
-      } else {
-        let is_bound_by_abs_node = |binder : &Binder| try_get_binding_index(binder, suggested_name).is_some();
+  let mut value_stack = Vec::<ast::Abs<Identifier>>::new();
 
-        let name_already_used_in_strictly_upper_binder_nodes = {
-          // test if any binder node higher up in the AST tree binds the variable
-          binders_from_root.iter()
-            .take(binders_from_root.len()-1)
-            .position(&is_bound_by_abs_node)
-            .is_some()
-        };
+  let mut control_stack = Vec::<UpDown<'a>>::new();
 
-        if name_already_used_in_strictly_upper_binder_nodes {
-          true
-        } else {
-          match try_get_binding_index(&binder_node.bound_variables, suggested_name) {
-            Some(same_binder_node_lookup) if same_binder_node_lookup < binder_name_index => true, // name already used in the same binder node
-            _ => false
+  control_stack.push(UpDown::Down(root_node));
+
+  while let Some(up_down) = control_stack.pop() {
+    match up_down {
+      UpDown::Down(current_node) => {
+
+        let new_binding_names = current_node.bound_variables.clone();
+        let l = new_binding_names.len();
+
+        binders_from_root.push(new_binding_names);
+
+        // Assign permanent bound variable name to the lambda node, one at a time
+        for binder_name_index in 0..l {
+
+          // Determine if a specified identifer is already used in any lambda abstraction
+          // 'above' the current binding (at index `binder_name_index` in `binders_from_root.last()`).
+          //
+          // Since in our AST lambda nodes can abstract MULTiple variable at once, here `above`
+          // means either in a lambda node sitting above the current binder `binders_from_root.last()`
+          // or in the same binder node but before `binder_name_index`.
+          let name_already_declared_above = | suggested_name:&Identifier | {
+            if free_variable_indices.contains(&suggested_name) {
+              // there exists a free variable with the same name
+              true
+            } else {
+              let is_bound_by_abs_node = |binder : &Binder| try_get_binding_index(binder, suggested_name).is_some();
+
+              let name_already_used_in_strictly_upper_binder_nodes = {
+                // test if any binder node higher up in the AST tree binds the variable
+                binders_from_root.iter()
+                  .take(binders_from_root.len()-1)
+                  .position(&is_bound_by_abs_node)
+                  .is_some()
+              };
+
+              if name_already_used_in_strictly_upper_binder_nodes {
+                true
+              } else {
+                match try_get_binding_index(&current_node.bound_variables, suggested_name) {
+                  Some(same_binder_node_lookup) if same_binder_node_lookup < binder_name_index => true, // name already used in the same binder node
+                  _ => false
+                }
+              }
+            }
+          };
+
+          let suggested_name = &current_node.bound_variables[binder_name_index];
+
+          if name_already_declared_above(suggested_name)
+          && has_naming_conflict(binder_name_index, &current_node, free_variable_indices, &binders_from_root, 0, suggested_name) {
+
+            // resolve the conflict by renaming the bound lambda
+            let primed_variable_name = &format!("{}'", current_node.bound_variables[binder_name_index]);
+
+            let fresh_name = create_fresh_variable(
+                                primed_variable_name,
+                                &name_already_declared_above);
+
+            binders_from_root.last_mut().unwrap()[binder_name_index] = fresh_name;
+          } else {
+            // no  conflict with this suggested name: we make it the permanent name.
           }
         }
+
+        // create the body of the lambda node with name assigned to all variable occurrences
+        match &current_node.body {
+          ast::AppOrVar::App(binder_body_app) => {
+            control_stack.push(UpDown::UpApp(binder_body_app.operands.len(), ));
+            for operand in binder_body_app.operands.iter().rev() {
+              control_stack.push(UpDown::Down(&operand));
+            }
+            control_stack.push(UpDown::Down(&binder_body_app.operator));
+          },
+          ast::AppOrVar::Var(binder_body_var) => {
+            let name = binder_body_var.name.lookup(&binders_from_root, &free_variable_indices, false);
+            control_stack.push(UpDown::UpVar(name, binder_body_var.arguments.len()));
+            for argument in binder_body_var.arguments.iter().rev() {
+              control_stack.push(UpDown::Down(&argument));
+            }
+          }
+        }
+      },
+
+      UpDown::UpVar(var_name, argument_count) => {
+        // pop from the value stack the variable's arguments
+        let arguments = value_stack
+                          .drain(value_stack.len()-argument_count..)
+                          .map(|a| Rc::new(a))
+                          .collect();
+
+        value_stack.push(ast::Abs {
+          bound_variables: binders_from_root.pop().unwrap(),
+          body: ast::AppOrVar::Var(Rc::new(ast::Var{
+            name: var_name.lookup(&binders_from_root, &free_variable_indices, false),
+            arguments: arguments
+          }))
+        });
+      },
+
+      UpDown::UpApp(operand_count) => {
+        // pop from the value stack the processed operator and operands
+        let operator = value_stack.pop().unwrap();
+        let operands = value_stack
+                        .drain(value_stack.len()-operand_count..)
+                        .map(|a| Rc::new(a))
+                        .collect();
+        value_stack.push(ast::Abs {
+          bound_variables: binders_from_root.pop().unwrap(),
+          body: ast::AppOrVar::App(Rc::new(ast::App{
+            operator: Rc::new(operator),
+            operands: operands
+          }))});
       }
-    };
-
-    let suggested_name = &binder_node.bound_variables[binder_name_index];
-
-    if name_already_declared_above(suggested_name)
-    && has_naming_conflict(binder_name_index, &binder_node, free_variable_indices, binders_from_root, 0, suggested_name) {
-
-      // resolve the conflict by renaming the bound lambda
-      let primed_variable_name = &format!("{}'", binder_node.bound_variables[binder_name_index]);
-
-      let fresh_name = create_fresh_variable(
-                          primed_variable_name,
-                          &name_already_declared_above);
-
-      binders_from_root.last_mut().unwrap()[binder_name_index] = fresh_name;
-    } else {
-      // no  conflict with this suggested name: we make it the permanent name.
     }
   }
 
-  let converted_body =
-    // create the body of the lambda node with name assigned to all variable occurrences
-    match &binder_node.body {
-      ast::AppOrVar::App(binder_body_app) => {
-        ast::AppOrVar::App(Rc::new(ast::App{
-          operator: Rc::new(resolve_name_ambiguity(&binder_body_app.operator, free_variable_indices, binders_from_root)),
-          operands: binder_body_app.operands.iter().map(|a| Rc::new(resolve_name_ambiguity(a, free_variable_indices, binders_from_root))).collect()
-        }))
-      },
-      ast::AppOrVar::Var(binder_body_var) => {
-        ast::AppOrVar::Var(Rc::new(ast::Var {
-            name: binder_body_var.name.lookup(binders_from_root, &free_variable_indices, false),
-            arguments: binder_body_var.arguments.iter().map(|a| Rc::new(resolve_name_ambiguity(a, free_variable_indices, binders_from_root))).collect()
-          }
-        ))
-      }
-    };
-
-  ast::Abs {
-    bound_variables: binders_from_root.pop().unwrap(),
-    body: converted_body
-  }
-
+  assert!(value_stack.len() == 1, "There is a bug: `value_stack` should have exactly one element.");
+  value_stack.pop().unwrap()
 }
 
 /// Evaluate and readout the normal form of a lambda term with variable identifier
@@ -1724,7 +1781,7 @@ pub fn evaluate_resolve_print_normal_form(
   term: &ast::Abs<Identifier>) {
   let mut free_variable_indices = Vec::new();
   let (readout, max_length) = evaluate_and_name_free_readout::<Identifier>(config, term, &mut free_variable_indices);
-  let resolved_name_readout = resolve_name_ambiguity(&readout, &free_variable_indices, &mut Vec::new());
+  let resolved_name_readout = resolve_name_ambiguity(&readout, &free_variable_indices);
   println!("Normalized term: {}", pretty_print::format_lambda_term(&resolved_name_readout, &free_variable_indices, false));
   println!("longest traversal {}", max_length);
 }
@@ -1780,7 +1837,7 @@ mod tests {
 
     let mut free_variable_indices = Vec::new();
     let (readout, _) = super::evaluate_and_name_free_readout::<super::Identifier>(&config, &parsed_input, &mut free_variable_indices);
-    let resolved_name_readout = super::resolve_name_ambiguity(&readout, &free_variable_indices, &mut Vec::new());
+    let resolved_name_readout = super::resolve_name_ambiguity(&readout, &free_variable_indices);
     let output_as_string = super::pretty_print::format_lambda_term(&resolved_name_readout, &free_variable_indices, false);
 
     assert!(expected_output == output_as_string, "output={} expected={}",output_as_string,expected_output);

@@ -59,7 +59,6 @@ cargo run --   "(%mult%) (%four%) (%four%)"
 cargo run --   "(%mult%) (%six%) (%six%)"
 ```
 
-
 ## Large stack use
 
 This example produces a stack overflow (`STATUS_STACK_OVERFLOW`) with the default Rust stack size:
