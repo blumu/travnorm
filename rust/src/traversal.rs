@@ -825,17 +825,17 @@ fn format_occurrence<T : ToString>(
           let l = pointer.label;
           let name =
             if l <= justifier_bound_variables.len() {
-              justifier_bound_variables[l - 1].to_string()
+              &justifier_bound_variables[l - 1]
             } else {
               let free_var_index = l - 1 - justifier_bound_variables.len();
               if free_var_index < free_variable_indices.len() {
-                free_variable_indices[free_var_index].clone()
+                &free_variable_indices[free_var_index]
               } else {
                 panic!("Invalid free variable index: {}", free_var_index)
                 //format!("@FV_{}@", free_var_index)
               }
             };
-          name + &format_pointer(pointer)
+          format!("{}{}", name, format_pointer(pointer))
         }
       }
     },
@@ -1120,33 +1120,88 @@ fn enumerate_and_print_all_traversals<T: Clone + ToString + BinderLocator<T>>(
 /// A binder declare a list of bound identifiers
 type Binder = Vec<Identifier>;
 
+
+/// Result of a name lookup: either the lookup succeeded and returned the name of a declared variable
+/// or it did not succeed and the name reference encoding is returned instead.
+pub enum LookupResult<'a> {
+  Declared(&'a str),
+  Encoding(String)
+}
+
+pub trait FatBinder {
+  fn count(&self) -> usize;
+  fn get(&self, index:usize) -> &Identifier;
+}
+
+impl FatBinder for &Binder {
+  fn count(&self) -> usize { self.len() }
+  fn get(&self, index:usize) -> &Identifier { &self[index] }
+}
+
+impl FatBinder for Binder {
+  fn count(&self) -> usize { self.len() }
+  fn get(&self, index:usize) -> &Identifier { &self[index] }
+}
+
 /// To support pretty-printing of lambda terms AST, the type `T`,
 /// used by the AST to represent variable binding reference,
 /// must implement name lookup.
 pub trait NameLookup {
+
+  fn format_encoding(&self) -> String;
+
   // Given a list of binders occurring in the path from the root
   // to the variable node, return the name of the variable.
   //
   // If the variable is free then the map 'free_variable_indices' can be used to lookup a
   // free variable name from its 'free variable index'.
-  fn lookup(
+  fn try_lookup<'a, B : FatBinder>(
+    &'a self,
+    binders_from_root: &'a [B],
+    free_variable_indices: &'a [Identifier], // read-only
+  )-> LookupResult<'a>;
+
+  fn lookup<'a, B : FatBinder>(
+    &'a self,
+    binders_from_root: &'a [B],
+    free_variable_indices: &'a [Identifier], // read-only
+  )-> &'a str {
+    match self.try_lookup(binders_from_root, free_variable_indices) {
+      LookupResult::Declared(name) => name,
+      LookupResult::Encoding(e) => panic!("Could not lookup variable reference: {}", e)
+    }
+  }
+
+  fn lookup_with_encoding<B : FatBinder>(
     &self,
-    binders_from_root: &[Binder],
-    free_variable_indices: &[Identifier], // read-only
-    with_encoding: bool // if true then pretty-print the variable name encoding itself as well as the variable name
-  )-> String;
+    binders_from_root: &[B],
+    free_variable_indices: &[Identifier],
+  )-> String {
+    match self.try_lookup(binders_from_root, free_variable_indices) {
+      LookupResult::Declared(resolved_name) =>
+        // append the name reference encoding to the resolved variable name
+        format!("{}({})", resolved_name, self.format_encoding()),
+      LookupResult::Encoding(e) => e
+    }
+  }
 }
 
 /// Implementation of name lookup for identifier-based variable reference.
-impl NameLookup for String {
-  fn lookup(
-    &self,
-    _: &[Binder],
-    _: &[Identifier],
-    _: bool
-  ) -> String {
+impl NameLookup for Identifier {
+
+  fn format_encoding(&self) -> String { "".to_owned() }
+
+  fn try_lookup<'a, B>(&'a self, _: &'a [B], _: &'a [Identifier]) -> LookupResult<'a> {
     // The name of the variable occurrence is just name identifier itself!
-    self.to_owned()
+    LookupResult::Declared(self)
+  }
+}
+
+impl NameLookup for &str {
+  fn format_encoding(&self) -> String { "".to_owned() }
+
+  fn try_lookup<'a, B>(&'a self, _: &'a [B], _: &'a [Identifier]) -> LookupResult<'a> {
+    LookupResult::Declared(self)
   }
 }
 
@@ -1173,7 +1228,7 @@ pub fn format_lambda_term<T : Clone + NameLookup>(
     with_encoding: bool
   ) -> String {
 
-  let mut binders_from_root: Vec<Binder> = Vec::new();
+  let mut binders_from_root: Vec<&Binder> = Vec::new();
 
   // Pretty-printing helper type
   struct Pretty {
@@ -1186,7 +1241,6 @@ pub fn format_lambda_term<T : Clone + NameLookup>(
   }
 
   enum UpDown<'a, T> {
-    //UpVar(&'a str, usize),
     UpVar(String, usize),
     UpApp(usize),
     Down(&'a ast::Term<T>)
@@ -1200,11 +1254,16 @@ pub fn format_lambda_term<T : Clone + NameLookup>(
   while let Some(top_down) = control_stack.pop() {
     match top_down {
       UpDown::Down(current_node) => {
-        binders_from_root.push(current_node.bound_variables.clone());
+        binders_from_root.push(&current_node.bound_variables);
 
         match &current_node.body {
           ast::AppOrVar::Var(var) => {
-            let var_name = var.name.lookup(&binders_from_root, free_variable_indices, with_encoding).clone();
+            let var_name =
+              if with_encoding {
+                var.name.lookup_with_encoding(&binders_from_root, free_variable_indices)
+              } else {
+                var.name.lookup(&binders_from_root, free_variable_indices).to_owned()
+              };
             control_stack.push(UpDown::UpVar(var_name, var.arguments.len()));
             for a in var.arguments.iter().rev() {
               control_stack.push(UpDown::Down(a));
@@ -1302,39 +1361,32 @@ struct DeBruijnPair {
 
 /// Implementation of variable name lookup for variable references encoded with Debruijn pairs `DeBruijnPair`.
 impl NameLookup for DeBruijnPair {
+    fn format_encoding(&self) -> String {
+       format!("{},{}", self.depth, self.index)
+    }
 
-    fn lookup(&self,
-              binders_from_root: &[Binder],
-              free_variable_indices: &[Identifier],
-              with_encoding: bool) -> String
+    fn try_lookup<'a, B : FatBinder>(&self,
+              binders_from_root: &'a [B],
+              free_variable_indices: &'a [Identifier]) -> LookupResult<'a>
     {
       let binder_index = binders_from_root.len() - (self.depth + 1) / 2;
       let binder_bound_variables = &binders_from_root[binder_index];
       let root_bound_variables = &binders_from_root[0];
       let is_bound_by_root = binder_index == 0;
 
-      let ghost_naming = format!("#({},{})", self.depth, self.index);
+      let free_variable_start_index = root_bound_variables.count() + 1;
 
-      let free_variable_start_index = root_bound_variables.len() + 1;
-
-      let variable_name =
-        if is_bound_by_root && self.index >= free_variable_start_index {
-          let free_variable_index = self.index - free_variable_start_index;
-          &free_variable_indices[free_variable_index]
-        } else {
-          if self.index > binder_bound_variables.len() {
-            // unresolved ghost variable name (should never happen on core-projected traversals)
-            &ghost_naming
-          } else {
-            &binder_bound_variables[self.index - 1]
-          }
-        };
-
-      // If with_encoding is true then append the deBruijn pair encoding to the variable name
-      if with_encoding {
-        format!("{}({},{})", variable_name, self.depth, self.index)
+      if is_bound_by_root && self.index >= free_variable_start_index {
+        let free_variable_index = self.index - free_variable_start_index;
+        LookupResult::Declared(&free_variable_indices[free_variable_index])
       } else {
-        variable_name.to_owned()
+        if self.index > binder_bound_variables.count() {
+          // unresolved ghost variable name (should never happen on core-projected traversals)
+          let ghost_naming = format!("#({})", self.format_encoding());
+          LookupResult::Encoding(ghost_naming)
+        } else {
+          LookupResult::Declared(&binder_bound_variables.get(self.index - 1))
+        }
       }
     }
 }
@@ -1443,26 +1495,27 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
 
         // Pop the children sub-term from the value stack
         let arguments =
-            value_stack
-              .drain((value_stack.len()-children_count)..)
-              .map(|n| Rc::new(n))
-              .collect();
+          value_stack
+            .drain((value_stack.len()-children_count)..)
+            .map(|n| Rc::new(n))
+            .collect();
 
         let subterm = ast::Abs {
-            bound_variables: match strand_begin_abs {
-              Structural(a) => { a.node.bound_variables.clone() },
-              Ghost(a) => { a.node.bound_variables.clone() }
-            },
-            body: ast::AppOrVar::Var(Rc::new(ast::Var{
-                // Since the core projection of the traversal is the path to the root (see paper),
-                // the depth of the variable is precisely the distance to the justifying node in the core projection.
-                name: DeBruijnPair {
-                  depth: strand_end_var.pointer().distance,
-                  index: strand_end_var.pointer().label
-                },
-                arguments: arguments
-              }))
-            };
+          bound_variables:
+              match strand_begin_abs {
+                Structural(a) => { a.node.bound_variables.clone() },
+                Ghost(a) => { a.node.bound_variables.clone() }
+              },
+          body: ast::AppOrVar::Var(Rc::new(ast::Var{
+              // Since the core projection of the traversal is the path to the root (see paper),
+              // the depth of the variable is precisely the distance to the justifying node in the core projection.
+              name: DeBruijnPair {
+                depth: strand_end_var.pointer().distance,
+                index: strand_end_var.pointer().label
+              },
+              arguments: arguments
+            }))
+          };
 
         value_stack.push(subterm);
 
@@ -1482,14 +1535,14 @@ fn traverse_and_readout<T : Clone + ToString + BinderLocator<T>>(
 /// This 'read-out' implementation produces an AST with DeBruijn variable references rather than string identifiers.
 /// Note therefore, that variable name collision may occur at pretty-printing time if just displaying the variable name
 /// without the associated deBruijn pairs.
-fn evaluate_and_name_free_readout<T : Clone + ToString + NameLookup + BinderLocator<T>>(
+fn evaluate_and_name_free_readout<T : Clone + ToString + NameLookup + NameLookup + BinderLocator<T>>(
   config: &Configuration,
   root:&ast::Term<T>,
   free_variable_indices: &mut Vec<Identifier>
 ) -> (ast::Abs<DeBruijnPair>, usize)
 {
   // Note that we set the `with_encoding` argument to `true`, since otherwise
-  // by printing the variable names only we could create naming conflicts.
+  // printing the variable names only could create naming conflicts.
   println!("Evaluating {}", format_lambda_term(root, free_variable_indices, true));
   traverse_and_readout(config, root, free_variable_indices)
 }
@@ -1604,7 +1657,7 @@ fn has_naming_conflict (
             // we now lookup its assigned name to check if there is a name conflict
             let adjusted_debruijn = DeBruijnPair{ depth : v.name.depth - depth_not_to_cross + 1, index : v.name.index };
             let over_arcing_variable_assigned_name =
-              adjusted_debruijn.lookup(binders_from_root, &free_variable_indices, false);
+              adjusted_debruijn.lookup(binders_from_root, &free_variable_indices);
 
             if suggested_name == over_arcing_variable_assigned_name {
               return true
@@ -1679,10 +1732,10 @@ fn resolve_name_ambiguity<'a> (
     match up_down {
       UpDown::Down(current_node) => {
 
-        let new_binding_names = current_node.bound_variables.clone();
+        let new_binding_names = &current_node.bound_variables;
         let l = new_binding_names.len();
 
-        binders_from_root.push(new_binding_names);
+        binders_from_root.push(new_binding_names.clone());
 
         // Assign permanent bound variable name to the lambda node, one at a time
         for binder_name_index in 0..l {
@@ -1702,7 +1755,8 @@ fn resolve_name_ambiguity<'a> (
 
               let name_already_used_in_strictly_upper_binder_nodes = {
                 // test if any binder node higher up in the AST tree binds the variable
-                binders_from_root.iter()
+                binders_from_root
+                  .iter()
                   .take(binders_from_root.len()-1)
                   .position(&is_bound_by_abs_node)
                   .is_some()
@@ -1747,7 +1801,7 @@ fn resolve_name_ambiguity<'a> (
             control_stack.push(UpDown::Down(&binder_body_app.operator));
           },
           ast::AppOrVar::Var(binder_body_var) => {
-            let name = binder_body_var.name.lookup(&binders_from_root, &free_variable_indices, false);
+            let name = binder_body_var.name.lookup(&binders_from_root, &free_variable_indices).to_owned();
             control_stack.push(UpDown::UpVar(name, binder_body_var.arguments.len()));
             for argument in binder_body_var.arguments.iter().rev() {
               control_stack.push(UpDown::Down(&argument));
@@ -1764,9 +1818,9 @@ fn resolve_name_ambiguity<'a> (
                           .collect();
 
         value_stack.push(ast::Abs {
-          bound_variables: binders_from_root.pop().unwrap(),
+          bound_variables: binders_from_root.pop().unwrap().clone(),
           body: ast::AppOrVar::Var(Rc::new(ast::Var{
-            name: var_name.lookup(&binders_from_root, &free_variable_indices, false),
+            name: var_name,
             arguments: arguments
           }))
         });
@@ -1779,6 +1833,7 @@ fn resolve_name_ambiguity<'a> (
                         .drain(value_stack.len()-operand_count..)
                         .map(|a| Rc::new(a))
                         .collect();
+
         value_stack.push(ast::Abs {
           bound_variables: binders_from_root.pop().unwrap(),
           body: ast::AppOrVar::App(Rc::new(ast::App{
