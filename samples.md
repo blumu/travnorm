@@ -18,7 +18,13 @@ set three=λs z. s(s(s z))
 set four=λs z. s(s(s(s z)))
 set five=λs z. s(s(s(s(s z))))
 set six=λs z. s(s(s(s(s(s z)))))
+set seven=λs z. s(s(s(s(s(s(s z))))))
+set eight=λs z. s(s(s(s(s(s(s(s z)))))))
+set nine=λs z. s(s(s(s(s(s(s(s(s z))))))))
+
 set Y=(λx. t (x x)) (λx. t (x x))
+
+:: %fib% of church(n) returns the fibonacci of church(n+2)
 set fib=λa.a (λ b c. c (λ d e f.f) (λ d e. d) (λ d e. d e) (λ d e. b (λ f g. c (λ h i. i (h f)) (λh.g) (λh.h)) d (b (λ f g. c(λ h i.i (h (λ j k. k (j f)))) (λh i.g) (λ h.h)(λ h.h)) d e))) (λ b c.c) a
 
 set succ=λ n f x.f (n f x)

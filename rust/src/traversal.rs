@@ -1178,9 +1178,15 @@ pub trait NameLookup {
     free_variable_indices: &[Identifier],
   )-> String {
     match self.try_lookup(binders_from_root, free_variable_indices) {
-      LookupResult::Declared(resolved_name) =>
+      LookupResult::Declared(resolved_name) => {
         // append the name reference encoding to the resolved variable name
-        format!("{}({})", resolved_name, self.format_encoding()),
+        let encoding = self.format_encoding();
+        if encoding.is_empty() {
+          resolved_name.to_owned()
+        } else {
+          format!("{}({})", resolved_name, self.format_encoding())
+        }
+      },
       LookupResult::Encoding(e) => e
     }
   }
@@ -1311,14 +1317,14 @@ pub fn format_lambda_term<T : Clone + NameLookup>(
 
       UpDown::UpApp(operand_count) => {
 
-        let pretty_printed_operator = bracketize(value_stack.pop().unwrap());
-
         let pretty_printed_operands =
             value_stack
             .drain(value_stack.len()-operand_count..)
             .map(|a| bracketize(a))
             .collect::<Vec<String>>()
             .join(" ");
+
+        let pretty_printed_operator = bracketize(value_stack.pop().unwrap());
 
         let abstraction_binders = binders_from_root.pop().unwrap();
         value_stack.push(Pretty {

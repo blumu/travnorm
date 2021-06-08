@@ -3,6 +3,8 @@
 
 This project hosts implementations in TypeScript and Rust of lambda calculus term evaluation algorithm from the TCS paper [Evaluating lambda terms with traversals](https://www.sciencedirect.com/science/article/abs/pii/S0304397519305316).
 
+The rust version also has an option to implement traversals that are significantly more succinct than the ones from the paper by pumping out redundant ghost internal node occurrences.
+
 ## Updates
 
 - May 2021, Added Rust implementation
@@ -109,20 +111,23 @@ provides the input lambda term as a string argument to the program. For instance
 
 ```cmd
 cd rust
-cargo run "(λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))"
+cargo run -- --normalize --normalize_resolve "(λt . t (λn a x . n (λs z . a s (x s z))) (λa . a) (λz0 . z0) ) (λs2 z2 . s2 (s2 z2))"
 ```
 
 Output:
 
 ```text
-Parsing lambda term (λ t . t (λ n a x . n (λ s z . a s (x s z))) (λ a . a) (λ z0 . z0) ) (λ s2 z2 . s2 (s2 z2))
+Reading input lambda term from command-line argument
+Parsing lambda term '(λt . t (λn a x . n (λs z . a s (x s z))) (λa . a) (λz0 . z0) ) (λs2 z2 . s2 (s2 z2))'
 term has length 26
 ===== Evaluation without name resolution
-Evaluating (\lambda t.t (\lambda n a x.n (\lambda s z.a s (x s z))) (\lambda a.a) (\lambda z0.z0))(\lambda s2 z2.s2 (s2 z2))
-\lambda x x s z.s(1,3) (x(3,1) s(5,3) (x(5,2) s(7,3) z(7,4)))
+Evaluating (λt.t (λn a x.n (λs z.a s (x s z))) (λa.a) (λz0.z0))(λs2 z2.s2 (s2 z2))
+λx x s z.s(1,3) (x(3,1) s(5,3) (x(5,2) s(7,3) z(7,4)))
+longest traversal 48
 ===== Evaluation with name resolution
-Evaluating (\lambda t.t (\lambda n a x.n (\lambda s z.a s (x s z))) (\lambda a.a) (\lambda z0.z0))(\lambda s2 z2.s2 (s2 z2))
-\lambda x x' s z.s (x s (x' s z))
+Evaluating (λt.t (λn a x.n (λs z.a s (x s z))) (λa.a) (λz0.z0))(λs2 z2.s2 (s2 z2))
+Normalized term: λx x' s z.s (x s (x' s z))
+longest traversal 48
 ```
 
 The input lambda term can also be passed from standard input. For instance on Windows:
@@ -134,26 +139,27 @@ type fib_four.lmd | cargo run
 To enumerate all traversals add the `--enumerate` switch:
 
 ```cmd
-cargo run -- --enumerate "(λ u.u (x u))(λ v.v y)"
+cargo run -- --enumerate "(λu.u (x u))(λv.v y)"
 ```
 
 Output:
 
 ```cmd
 Reading input lambda term from command-line argument
-Parsing lambda term '(λ u.u (x u))(λ v.v y)'
+Parsing lambda term '(λu.u (x u))(λv.v y)'
 term has length 12
 ===== Enumerate all traversals
-Traversing (λ u.u (x u))(λ v.v y)
-    |Depth:2|Length:18|Maximal traversal:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--[](1,1)--u(7,1)--[v](9,1)--v(1,1)--{}(3,1)--#(5,1)--{}(1,1)--#(3,1)--[](5,1)--y(17,2)
-    |               projection:[]--x(1,1)--[v](1,1)--#(1,1)--{}(1,1)--y(5,2)
+Traversing (λu.u (x u))(λv.v y)
   |Depth:1|Length:12|Maximal traversal:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--{}(1,2)--#(3,1)--[](5,1)--y(11,2)
   |               projection:[]--x(1,1)--{}(1,2)--y(3,2)
+    |Depth:2|Length:18|Maximal traversal:[]--@--[u](1,0)--u(1,1)--[v](3,1)--v(1,1)--[](3,1)--x(7,1)--[](1,1)--u(7,1)--[v](9,1)--v(1,1)--{}(3,1)--#(5,1)--{}(1,1)--#(3,1)--[](5,1)--y(17,2)
+    |               projection:[]--x(1,1)--[v](1,1)--#(1,1)--{}(1,1)--y(5,2)
+longest traversal 18
 ```
 
 ### Examples
 
-Fibonacci(4)
+The term `Fib = (λa.a (λ b c. c (λ d e f.f) (λ d e. d) (λ d e. d e) (λ d e. b (λ f g. c (λ h i. i (h f)) (λh.g) (λh.h)) d (b (λ f g. c(λ h i.i (h (λ j k. k (j f)))) (λh i.g) (λ h.h)(λ h.h)) d e))) (λ b c.c) a)` convert a church numeral $n$ to the $n+2$th number in the Fibonacci sequence. Here is a traversal normalization of $Fib 4$:
 
 ```cmd
 cargo run "(λa.a (λ b c. c (λ d e f.f) (λ d e. d) (λ d e. d e) (λ d e. b (λ f g. c (λ h i. i (h f)) (λh.g) (λh.h)) d (b (λ f g. c(λ h i.i (h (λ j k. k (j f)))) (λh i.g) (λ h.h)(λ h.h)) d e))) (λ b c.c) a) (λf x . f(f(f (f x))))"
@@ -162,12 +168,51 @@ cargo run "(λa.a (λ b c. c (λ d e f.f) (λ d e. d) (λ d e. d e) (λ d e. b (
 Output:
 
 ```cmd
-===== Evaluation without name resolution
-Evaluating (\lambda a.a (\lambda b c.c (\lambda d e f.f) (\lambda d e.d) (\lambda d e.d e) (\lambda d e.b (\lambda f g.c (\lambda h i.i (h f)) (\lambda h.g) (\lambda h.h)) d (b (\lambda f g.c (\lambda h i.i (h (\lambda j k.k (j f)))) (\lambda h i.g) (\lambda h.h) (\lambda h.h)) d e))) (\lambda b c.c) a)(\lambda f x.f (f (f (f x))))
-\lambda d e.d(1,1) (d(3,1) (d(5,1) (d(7,1) (d(9,1) (d(11,1) (d(13,1) (d(15,1) e(17,2))))))))
+No command specified, defaulting to normalization with name resolution.
+Reading input lambda term from command-line argument
+Parsing lambda term '(λa.a (λ b c. c (λ d e f.f) (λ d e. d) (λ d e. d e) (λ d e. b (λ f g. c (λ h i. i (h f)) (λh.g) (λh.h)) d (b (λ f g. c(λ h i.i (h (λ j k. k (j f)))) (λh i.g) (λ h.h)(λ h.h)) d e))) (λ b c.c) a) (λf x . f(f(f (f x))))'
+term has length 68
 ===== Evaluation with name resolution
-Evaluating (\lambda a.a (\lambda b c.c (\lambda d e f.f) (\lambda d e.d) (\lambda d e.d e) (\lambda d e.b (\lambda f g.c (\lambda h i.i (h f)) (\lambda h.g) (\lambda h.h)) d (b (\lambda f g.c (\lambda h i.i (h (\lambda j k.k (j f)))) (\lambda h i.g) (\lambda h.h) (\lambda h.h)) d e))) (\lambda b c.c) a)(\lambda f x.f (f (f (f x))))
-\lambda d e.d (d (d (d (d (d (d (d e)))))))
+Evaluating (λa.a (λb c.c (λd e f.f) (λd e.d) (λd e.d e) (λd e.b (λf g.c (λh i.i (h f)) (λh.g) (λh.h)) d (b (λf g.c (λh i.i (h (λj k.k (j f)))) (λh i.g) (λh.h) (λh.h)) d e))) (λb c.c) a)(λf x.f (f (f (f x))))
+Normalized term: λd e.d (d (d (d (d (d (d (d e)))))))
+longest traversal 980
+```
+
+## Pumping of Ghost copy-cat occurrences
+
+By default, the Rust implementation pumps out internal ghost copy-cat occurrences
+when enumerating traversals. This yields traversals that are tremendously shorter
+which makes their enumeration more memory efficient.
+This behavior can be disabled with the `--no-pumping` switch to obtain the same traversals as the ones from the paper.
+
+On the fibonacci sequence calculation based on Church numerals, ghost pumping leads to exponentially shorter traversals. Here are two runs comparing  `fib four`, which computes the sixth number in the fibonacci sequence, with and without ghost pumping:
+
+```cmd
+type fib_four.lmd | cargo run
+```
+
+Output:
+
+```cmd
+===== Evaluation with name resolution
+Evaluating (λa.a (λb c.c (λd e f.f) (λd e.d) (λd e.d e) (λd e.b (λf g.c (λh i.i (h f)) (λh.g) (λh.h)) d (b (λf g.c (λh i.i (h (λj k.k (j f)))) (λh i.g) (λh.h) (λh.h)) d e))) (λb c.c) a)(λf x.f (f (f (f x))))
+Normalized term: λd e.d (d (d (d (d (d (d (d e)))))))
+longest traversal 980
+```
+
+Without ghost pumping:
+
+```cmd
+type fib_four.lmd | cargo run -- --no-pumping
+```
+
+Output:
+
+```cmd
+===== Evaluation with name resolution
+Evaluating (λa.a (λb c.c (λd e f.f) (λd e.d) (λd e.d e) (λd e.b (λf g.c (λh i.i (h f)) (λh.g) (λh.h)) d (b (λf g.c (λh i.i (h (λj k.k (j f)))) (λh i.g) (λh.h) (λh.h)) d e))) (λb c.c) a)(λf x.f (f (f (f x))))
+Normalized term: λd e.d (d (d (d (d (d (d (d e)))))))
+longest traversal 218582
 ```
 
 ## Other implementations
